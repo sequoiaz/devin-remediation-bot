@@ -1,0 +1,14 @@
+services:
+  remediation-bot:
+    build: .
+    image: devin-remediation-bot
+    container_name: devin-remediation-bot
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      DATABASE_PATH: /app/data/sessions.db
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
