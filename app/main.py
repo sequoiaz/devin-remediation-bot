@@ -60,6 +60,15 @@ def create_remediation_session(issue: Dict[str, Any]) -> Dict[str, Any]:
     devin_client = get_devin_client()
     issue_number = issue.get("number")
 
+    active = db.get_active_session_for_issue(issue_number)
+    if active:
+        logger.info(
+            "[remediate] issue=#%s already has in-flight session=%s; skipping duplicate",
+            issue_number,
+            active["devin_session_id"],
+        )
+        return active
+
     try:
         session = devin_client.create_session(issue)
     except DevinAPIError as exc:
@@ -159,13 +168,25 @@ async def github_webhook(
 @app.post("/simulate")
 async def simulate(request: Request) -> Response:
     settings = get_settings()
-    payload = await request.json()
+    try:
+        payload = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return JSONResponse({"detail": "body must be valid JSON"}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"detail": "body must be a JSON object"}, status_code=400)
+
     issue_number = payload.get("issue_number")
     if issue_number is None:
         return JSONResponse({"detail": "issue_number is required"}, status_code=400)
+    try:
+        issue_number = int(issue_number)
+    except (TypeError, ValueError):
+        return JSONResponse(
+            {"detail": "issue_number must be an integer"}, status_code=400
+        )
 
     try:
-        issue = get_github_client().get_issue(settings.target_repo, int(issue_number))
+        issue = get_github_client().get_issue(settings.target_repo, issue_number)
     except GitHubAPIError as exc:
         return JSONResponse({"detail": str(exc)}, status_code=502)
 
@@ -291,7 +312,7 @@ async def dashboard() -> HTMLResponse:
             f"<td>{html.escape(str(session.get('issue_title') or '-'))}</td>"
             f"<td>{html.escape(str(status))}</td>"
             f"<td>{pr_cell}</td>"
-            f"<td>{html.escape(str(session.get('acus_consumed') or 0))}</td>"
+            f"<td>{float(session.get('acus_consumed') or 0):.2f}</td>"
             f"<td>{html.escape(str(session.get('created_at') or '-'))}</td>"
             f"<td>{html.escape(str(session.get('updated_at') or '-'))}</td>"
             f"<td>{html.escape(format_duration(session.get('time_to_pr_seconds')))}</td>"

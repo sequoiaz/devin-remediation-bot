@@ -113,6 +113,18 @@ class Database:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def get_active_session_for_issue(self, issue_number: int) -> Optional[Dict[str, Any]]:
+        """Most recent non-terminal session for an issue, if one is already running."""
+        placeholders = ", ".join("?" for _ in TERMINAL_STATUSES)
+        query = (
+            "SELECT * FROM sessions WHERE issue_number = ? "
+            f"AND COALESCE(status_enum, status, '') NOT IN ({placeholders}) "
+            "ORDER BY datetime(created_at) DESC, id DESC LIMIT 1"
+        )
+        with self.connect() as conn:
+            row = conn.execute(query, (issue_number, *TERMINAL_STATUSES)).fetchone()
+        return dict(row) if row else None
+
     def list_non_terminal_sessions(self) -> List[Dict[str, Any]]:
         placeholders = ", ".join("?" for _ in TERMINAL_STATUSES)
         query = (

@@ -14,6 +14,14 @@ def test_distinct_sessions_create_distinct_rows(database):
     assert len(database.list_sessions()) == 2
 
 
+def test_active_session_lookup_for_issue(database):
+    assert database.get_active_session_for_issue(42) is None
+    database.upsert_session(issue_number=42, devin_session_id="a", status="running", status_enum="running")
+    assert database.get_active_session_for_issue(42)["devin_session_id"] == "a"
+    database.upsert_session(issue_number=42, devin_session_id="a", status="finished", status_enum="finished")
+    assert database.get_active_session_for_issue(42) is None
+
+
 def test_non_terminal_listing(database):
     database.upsert_session(issue_number=1, devin_session_id="a", status="running", status_enum="running")
     database.upsert_session(issue_number=2, devin_session_id="b", status="finished", status_enum="finished")
