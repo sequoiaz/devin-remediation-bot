@@ -172,7 +172,7 @@ async def refresh(force: bool = False) -> Dict[str, Any]:
     earlier version of the bot completed without ever recording its PR.
     """
     settings = get_settings()
-    updated = await asyncio.to_thread(
+    report = await asyncio.to_thread(
         poll_once,
         get_database(),
         get_devin_client(),
@@ -180,7 +180,12 @@ async def refresh(force: bool = False) -> Dict[str, Any]:
         settings.target_repo,
         force,
     )
-    return {"status": "ok", "sessions_refreshed": updated, "forced": force}
+    return {
+        "status": "ok",
+        "sessions_refreshed": report.updated,
+        "forced": force,
+        "errors": report.errors,
+    }
 
 
 @app.post("/simulate")

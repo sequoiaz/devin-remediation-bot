@@ -204,7 +204,12 @@ def test_refresh_polls_in_flight_sessions_on_demand(client, env):
     ):
         response = client.post("/refresh")
 
-    assert response.json() == {"status": "ok", "sessions_refreshed": 1, "forced": False}
+    assert response.json() == {
+        "status": "ok",
+        "sessions_refreshed": 1,
+        "forced": False,
+        "errors": [],
+    }
     row = db.get_session(1, "s1")
     assert row["pr_url"] == f"https://github.com/{TARGET_REPO}/pull/9"
     assert row["status"] == "exit"

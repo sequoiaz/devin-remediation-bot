@@ -80,6 +80,7 @@ Other endpoints:
 ```bash
 curl -X POST http://localhost:8000/refresh   # poll in-flight sessions now
 curl -X POST 'http://localhost:8000/refresh?force=true'  # also re-poll completed rows
+# both return {"sessions_refreshed": N, "errors": [...]} so a failed poll is never silent
 curl http://localhost:8000/health
 curl http://localhost:8000/metrics
 open http://localhost:8000/dashboard
@@ -90,6 +91,10 @@ open http://localhost:8000/dashboard
 Set `DRY_RUN=true` to exercise the whole pipeline (webhook → session → poller → dashboard)
 without spending ACUs or touching a real repository; the clients return realistic fake
 payloads instead of making network calls.
+
+Dry-run rows keep their `devin-dryrun-…` session id in the database. Those sessions do not
+exist in the Devin API, so the poller skips them once the bot runs with `DRY_RUN=false`
+rather than failing against them on every cycle.
 
 ## Tests
 

@@ -10,6 +10,10 @@ logger = logging.getLogger(__name__)
 
 DEVIN_API_BASE = "https://api.devin.ai/v3/organizations"
 
+# Sessions minted by DRY_RUN do not exist in the API; the prefix identifies them
+# once the bot is restarted with DRY_RUN off.
+DRY_RUN_SESSION_PREFIX = "devin-dryrun-"
+
 STRUCTURED_OUTPUT_SCHEMA = {
     "type": "object",
     "properties": {
@@ -118,7 +122,7 @@ class DevinClient:
     def create_session(self, issue: Dict[str, Any]) -> Dict[str, Any]:
         payload = self.build_create_payload(issue)
         if self.dry_run:
-            session_id = f"devin-dryrun-{uuid.uuid4().hex[:12]}"
+            session_id = f"{DRY_RUN_SESSION_PREFIX}{uuid.uuid4().hex[:12]}"
             logger.info(
                 "[devin][dry-run] would create session for issue #%s -> %s",
                 issue.get("number"),

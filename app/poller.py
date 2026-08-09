@@ -1,12 +1,19 @@
 import asyncio
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, NamedTuple, Optional
 
 from app.db import Database, is_done
-from app.devin_client import DevinAPIError, DevinClient
+from app.devin_client import DRY_RUN_SESSION_PREFIX, DevinAPIError, DevinClient
 from app.github_client import GitHubAPIError, GitHubClient
 
 logger = logging.getLogger(__name__)
+
+
+class PollReport(NamedTuple):
+    """Outcome of one poll cycle: rows refreshed, plus per-row failures."""
+
+    updated: int
+    errors: List[Dict[str, Any]]
 
 
 def _as_pr(entry: Any) -> Dict[str, Any]:
@@ -40,20 +47,30 @@ def poll_once(
     github_client: GitHubClient,
     target_repo: str,
     force: bool = False,
-) -> int:
-    """Refresh every non-terminal session. Returns the number of rows updated.
+) -> PollReport:
+    """Refresh every non-terminal session.
 
     `force` also refreshes rows that already count as done, which recovers a row
     an earlier version of the bot left terminal without ever recording its PR.
     """
     rows = db.list_sessions() if force else db.list_non_terminal_sessions()
     updated = 0
+    errors: List[Dict[str, Any]] = []
     for row in rows:
         session_id = row["devin_session_id"]
         issue_number = row["issue_number"]
         was_done = is_done(
             row.get("status"), row.get("status_detail"), row.get("pr_url")
         )
+        if session_id.startswith(DRY_RUN_SESSION_PREFIX) and not devin_client.dry_run:
+            # Simulated session: the API never knew it, so polling only yields 403s.
+            logger.info(
+                "[poll] session=%s issue=#%s is simulated, skipping",
+                session_id,
+                issue_number,
+            )
+            db.record_poll(issue_number, session_id)
+            continue
         try:
             session = devin_client.get_session(session_id)
         except DevinAPIError as exc:
@@ -63,7 +80,15 @@ def poll_once(
                 issue_number,
                 exc,
             )
-            # Nothing polls a done row again, so a stored error would never clear.
+            errors.append(
+                {
+                    "issue_number": issue_number,
+                    "devin_session_id": session_id,
+                    "error": str(exc),
+                }
+            )
+            # Nothing polls a done row again, so a stored error would never clear;
+            # the caller sees it in the report instead.
             if not was_done:
                 db.record_poll(issue_number, session_id, error=str(exc))
             continue
@@ -125,7 +150,7 @@ def poll_once(
                 new_status,
                 new_detail or "-",
             )
-    return updated
+    return PollReport(updated, errors)
 
 
 async def poller_loop(
