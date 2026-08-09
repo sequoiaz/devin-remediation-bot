@@ -8,6 +8,18 @@ from app.github_client import GitHubAPIError, GitHubClient
 
 logger = logging.getLogger(__name__)
 
+PR_STATES = {"open", "closed", "merged"}
+SETTLED_PR_STATES = {"merged", "closed"}
+
+
+def is_simulated(session_id: str, devin_client: DevinClient) -> bool:
+    """A row minted by DRY_RUN, seen by a bot that is no longer simulating.
+
+    Neither its session nor its pull request exists, and its PR number is random,
+    so it could otherwise be matched against an unrelated real pull request.
+    """
+    return session_id.startswith(DRY_RUN_SESSION_PREFIX) and not devin_client.dry_run
+
 
 class PollReport(NamedTuple):
     """Outcome of one poll cycle: rows refreshed, plus per-row failures."""
@@ -41,30 +53,57 @@ def extract_pr(
     return prs[0]
 
 
-def resolve_pr(
-    devin_client: DevinClient,
-    session: Dict[str, Any],
-    target_repo: Optional[str] = None,
-    max_depth: int = 2,
-) -> Optional[Dict[str, Any]]:
-    """Pull request of a session, or of a descendant it delegated the work to.
+def session_tree(
+    devin_client: DevinClient, session: Dict[str, Any], max_depth: int = 2
+) -> List[Dict[str, Any]]:
+    """A session followed by the descendants it delegated work to, parent first.
 
-    A session that spawns children keeps an empty `pull_requests` of its own, so
-    the PR has to be looked up on `child_session_ids`.
+    A session that spawns children keeps an empty `pull_requests` and no ACUs of
+    its own, so both have to be looked up on `child_session_ids`.
     """
-    pr = extract_pr(session, target_repo)
-    if pr or max_depth <= 0:
-        return pr
+    sessions = [session]
+    if max_depth <= 0:
+        return sessions
     for child_id in session.get("child_session_ids") or []:
         try:
             child = devin_client.get_session(child_id)
         except DevinAPIError as exc:
             logger.warning("[poll] child session=%s unreadable: %s", child_id, exc)
             continue
-        pr = resolve_pr(devin_client, child, target_repo, max_depth - 1)
+        sessions.extend(session_tree(devin_client, child, max_depth - 1))
+    return sessions
+
+
+def resolve_pr(
+    sessions: List[Dict[str, Any]], target_repo: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
+    """The first pull request in a session tree, the parent's own winning."""
+    for session in sessions:
+        pr = extract_pr(session, target_repo)
         if pr:
             return pr
     return None
+
+
+def resolve_acus(
+    devin_client: DevinClient, sessions: List[Dict[str, Any]]
+) -> Optional[float]:
+    """ACUs billed across a session tree, or None when nothing could be read.
+
+    A session payload reports `acus_consumed: 0.0` even when it did real work, and
+    a parent that delegates is billed nothing, so consumption is asked for per
+    session and the payload is only a fallback. A tree that yields nothing but
+    zeroes is reported as unknown rather than free, so a cycle where consumption is
+    unreachable cannot overwrite a figure an earlier cycle got right.
+    """
+    total: Optional[float] = None
+    for session in sessions:
+        billed = devin_client.get_acus(session.get("session_id") or "")
+        if not isinstance(billed, (int, float)):
+            billed = session.get("acus_consumed")
+        if isinstance(billed, (int, float)) and billed:
+            total = (total or 0.0) + float(billed)
+    return total
 
 
 def poll_once(
@@ -88,7 +127,7 @@ def poll_once(
         was_done = is_done(
             row.get("status"), row.get("status_detail"), row.get("pr_url")
         )
-        if session_id.startswith(DRY_RUN_SESSION_PREFIX) and not devin_client.dry_run:
+        if is_simulated(session_id, devin_client):
             # Simulated session: the API never knew it, so polling only yields 403s.
             logger.debug(
                 "[poll] session=%s issue=#%s is simulated, skipping",
@@ -122,9 +161,14 @@ def poll_once(
         old_status = row.get("status")
         new_status = session.get("status")
         new_detail = session.get("status_detail")
-        pr = resolve_pr(devin_client, session, target_repo)
+        tree = session_tree(devin_client, session)
+        pr = resolve_pr(tree, target_repo)
         pr_url = pr["url"] if pr else None
         had_pr = bool(row.get("pr_url"))
+        # A session keeps reporting the pull request as open after it is merged, so
+        # GitHub's verdict wins once it is in.
+        settled = row.get("pr_state") in SETTLED_PR_STATES
+        pr_state = None if settled or not pr else pr["state"]
 
         db.upsert_session(
             issue_number=issue_number,
@@ -133,8 +177,8 @@ def poll_once(
             status=new_status,
             status_detail=new_detail,
             pr_url=pr_url,
-            pr_state=pr["state"] if pr else None,
-            acus_consumed=session.get("acus_consumed"),
+            pr_state=pr_state,
+            acus_consumed=resolve_acus(devin_client, tree),
         )
         db.record_poll(issue_number, session_id)
         updated += 1
@@ -179,7 +223,52 @@ def poll_once(
                 new_status,
                 new_detail or "-",
             )
+    errors.extend(refresh_pr_states(db, devin_client, github_client))
     return PollReport(updated, errors)
+
+
+def refresh_pr_states(
+    db: Database, devin_client: DevinClient, github_client: GitHubClient
+) -> List[Dict[str, Any]]:
+    """Keep what GitHub knows about each pull request current.
+
+    A row whose session is done is never polled again, so its `pr_state` would stay
+    `open` forever; GitHub is also the only source of when the pull request was
+    actually opened, which is what time-to-PR should measure.
+    """
+    errors: List[Dict[str, Any]] = []
+    for row in db.list_sessions():
+        pr_url = row.get("pr_url")
+        settled = row.get("pr_state") in SETTLED_PR_STATES
+        if not pr_url or (settled and row.get("pr_created_at")):
+            continue
+        if is_simulated(row["devin_session_id"], devin_client):
+            continue
+        try:
+            pr = github_client.get_pr(pr_url)
+        except GitHubAPIError as exc:
+            logger.error("[poll] pr=%s unavailable: %s", pr_url, exc)
+            errors.append(
+                {
+                    "issue_number": row["issue_number"],
+                    "devin_session_id": row["devin_session_id"],
+                    "error": str(exc),
+                }
+            )
+            continue
+        if not pr:
+            continue
+        state = pr.get("state") if pr.get("state") in PR_STATES else None
+        state = state if state != row.get("pr_state") else None
+        created_at = pr.get("created_at") if not row.get("pr_created_at") else None
+        if not isinstance(created_at, str):
+            created_at = None
+        if not state and not created_at:
+            continue
+        db.record_pr(row["issue_number"], row["devin_session_id"], state, created_at)
+        if state:
+            logger.info("[poll] pr=%s is now %s", pr_url, state)
+    return errors
 
 
 async def poller_loop(

@@ -115,3 +115,18 @@ def test_legacy_database_gains_status_detail_column(tmp_path):
     assert row["last_poll_error"] is None
     db.upsert_session(issue_number=7, devin_session_id="old", status="exit")
     assert db.get_session(7, "old")["completed_at"]
+
+
+def test_record_pr_touches_nothing_else(database):
+    database.upsert_session(
+        issue_number=1, devin_session_id="s1", status="running",
+        status_detail="finished", pr_url="https://github.com/o/r/pull/1",
+        pr_state="open",
+    )
+    database.record_pr(1, "s1", "merged", "2026-08-09T06:30:00+00:00")
+    row = database.get_session(1, "s1")
+    assert (row["pr_state"], row["status_detail"]) == ("merged", "finished")
+    assert row["pr_created_at"] == "2026-08-09T06:30:00+00:00"
+    # A later call that knows only the state keeps the opening time.
+    database.record_pr(1, "s1", pr_state="closed")
+    assert database.get_session(1, "s1")["pr_created_at"] == "2026-08-09T06:30:00+00:00"

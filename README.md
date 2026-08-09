@@ -11,7 +11,7 @@ dashboard.
 | --- | --- |
 | `app/main.py` | FastAPI routes: `/webhook/github`, `/simulate`, `/refresh`, `/dashboard`, `/metrics`, `/health` |
 | `app/devin_client.py` | Devin v3 API wrapper (create/get session) with retries and `dry_run` |
-| `app/github_client.py` | GitHub REST wrapper (get issue, post comment) with retries and `dry_run` |
+| `app/github_client.py` | GitHub REST wrapper (get issue, post comment, read PR state) with retries and `dry_run` |
 | `app/db.py` | SQLite `sessions` table, upsert keyed on `(issue_number, devin_session_id)` |
 | `app/poller.py` | Background poller (every 20s) refreshing non-terminal sessions |
 
@@ -20,6 +20,18 @@ reports `status_detail == "finished"` *and* its pull request has been captured, 
 published after the agent declares itself finished still reaches the dashboard. Failed
 polls are recorded per row and reported through the `poll_errors` metric and the `/refresh`
 response instead of only reaching the log; the dashboard itself stays free of poll plumbing.
+
+Every cycle also asks GitHub about any pull request that is still open or whose opening
+time is unknown, so the dashboard's **PR state** column follows the PR to `merged`/`closed`
+long after its session stopped being polled, and **Time to PR** measures up to the moment
+GitHub says the pull request was opened rather than the moment this bot noticed it (which
+would count any downtime in between).
+
+ACUs come from the consumption API (`/v3/enterprise/consumption/daily/sessions/{id}`) summed
+over the session and any children it delegated to, because a session payload reports
+`acus_consumed: 0.0` even for work that was billed, and a delegating parent is billed
+nothing. That endpoint needs a key with `ManageBilling`; without one the bot logs once and
+falls back to the session payload's figure.
 
 ## Setup
 

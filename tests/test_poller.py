@@ -2,7 +2,14 @@ import logging
 from unittest.mock import MagicMock
 
 from app.devin_client import DevinAPIError
-from app.poller import extract_pr, poll_once, resolve_pr
+from app.github_client import GitHubAPIError
+from app.poller import (
+    extract_pr,
+    poll_once,
+    resolve_acus,
+    resolve_pr,
+    session_tree,
+)
 
 REPO = "fake-org/fake-repo"
 
@@ -46,15 +53,19 @@ def test_resolve_pr_follows_a_session_that_delegated_to_a_child():
     parent = {"session_id": "p", "pull_requests": [], "child_session_ids": ["c"]}
     devin = MagicMock()
     devin.get_session.return_value = finished_session("c")
-    assert resolve_pr(devin, parent, REPO)["url"] == f"https://github.com/{REPO}/pull/9"
+    tree = session_tree(devin, parent)
+    assert resolve_pr(tree, REPO)["url"] == f"https://github.com/{REPO}/pull/9"
     devin.get_session.assert_called_once_with("c")
 
 
 def test_resolve_pr_prefers_the_parents_own_pull_request():
     devin = MagicMock()
+    devin.get_session.return_value = finished_session(
+        "c", f"https://github.com/{REPO}/pull/11"
+    )
     parent = dict(finished_session("p"), child_session_ids=["c"])
-    assert resolve_pr(devin, parent, REPO)["url"] == f"https://github.com/{REPO}/pull/9"
-    devin.get_session.assert_not_called()
+    tree = session_tree(devin, parent)
+    assert resolve_pr(tree, REPO)["url"] == f"https://github.com/{REPO}/pull/9"
 
 
 def test_resolve_pr_survives_an_unreadable_child():
@@ -64,7 +75,26 @@ def test_resolve_pr_survives_an_unreadable_child():
         DevinAPIError("gone"),
         finished_session("d"),
     ]
-    assert resolve_pr(devin, parent, REPO)["url"] == f"https://github.com/{REPO}/pull/9"
+    tree = session_tree(devin, parent)
+    assert resolve_pr(tree, REPO)["url"] == f"https://github.com/{REPO}/pull/9"
+
+
+def test_resolve_acus_bills_the_whole_tree_through_the_consumption_api():
+    """Session payloads report 0.0 even for work that was billed."""
+    devin = MagicMock()
+    devin.get_acus.side_effect = lambda session_id: {"p": 0.0, "c": 7.5}[session_id]
+    tree = [
+        {"session_id": "p", "acus_consumed": 0.0},
+        {"session_id": "c", "acus_consumed": 0.0},
+    ]
+    assert resolve_acus(devin, tree) == 7.5
+
+
+def test_resolve_acus_falls_back_to_the_session_payload():
+    """Consumption needs a `ManageBilling` key, which the bot may not have."""
+    devin = MagicMock()
+    devin.get_acus.return_value = None
+    assert resolve_acus(devin, [{"session_id": "p", "acus_consumed": 4.25}]) == 4.25
 
 
 def test_transitions_to_terminal_and_comments_once(database):
@@ -228,3 +258,106 @@ def test_forced_poll_does_not_stick_an_error_on_a_done_row(database):
             "error": "session no longer exists",
         }
     ]
+
+
+PR = "https://github.com/fake-org/fake-repo/pull/9"
+PR_OPENED_AT = "2026-08-09T06:30:00+00:00"
+
+
+def github_with_pr(state="open", created_at=PR_OPENED_AT):
+    github = MagicMock()
+    github.get_pr.return_value = {"state": state, "created_at": created_at}
+    return github
+
+
+def test_pr_state_is_refreshed_after_the_pull_request_is_merged(database):
+    """A done row is never polled again, so its PR state has to come from GitHub."""
+    database.upsert_session(
+        issue_number=42, devin_session_id="s1", status="exit", pr_url=PR,
+        pr_state="open",
+    )
+    github = github_with_pr("merged")
+    poll_once(database, MagicMock(), github, REPO)
+    github.get_pr.assert_called_once_with(PR)
+    row = database.get_session(42, "s1")
+    assert (row["pr_state"], row["pr_created_at"]) == ("merged", PR_OPENED_AT)
+
+
+def test_a_settled_pr_is_not_queried_again(database):
+    database.upsert_session(
+        issue_number=42, devin_session_id="s1", status="exit", pr_url=PR,
+        pr_state="merged",
+    )
+    database.record_pr(42, "s1", pr_created_at=PR_OPENED_AT)
+    github = MagicMock()
+    poll_once(database, MagicMock(), github, REPO)
+    github.get_pr.assert_not_called()
+
+
+def test_an_unreadable_pr_state_is_reported_and_leaves_the_row_alone(database):
+    database.upsert_session(
+        issue_number=42, devin_session_id="s1", status="exit", pr_url=PR,
+        pr_state="open",
+    )
+    github = MagicMock()
+    github.get_pr.side_effect = GitHubAPIError("HTTP 404")
+    report = poll_once(database, MagicMock(), github, REPO)
+    assert report.errors == [
+        {"issue_number": 42, "devin_session_id": "s1", "error": "HTTP 404"}
+    ]
+    assert database.get_session(42, "s1")["pr_state"] == "open"
+
+
+def test_refreshing_the_pr_state_keeps_the_row_done(database):
+    """`upsert_session` clears status_detail, which would un-finish the row."""
+    database.upsert_session(
+        issue_number=42, devin_session_id="s1", status="running",
+        status_detail="finished", pr_url=PR, pr_state="open",
+    )
+    devin = MagicMock()
+    devin.get_session.return_value = finished_session()
+    poll_once(database, devin, github_with_pr("merged"), REPO)
+
+    row = database.get_session(42, "s1")
+    assert (row["status_detail"], row["pr_state"]) == ("finished", "merged")
+    # Still done, so the next cycle leaves it alone instead of re-polling forever.
+    assert database.list_non_terminal_sessions() == []
+
+
+def test_a_session_cannot_reopen_a_merged_pull_request(database):
+    """Devin keeps reporting `open`; GitHub is the authority once the PR settles."""
+    database.upsert_session(
+        issue_number=42, devin_session_id="s1", status="running", pr_url=PR,
+        pr_state="merged",
+    )
+    devin = MagicMock()
+    devin.get_session.return_value = finished_session()
+    poll_once(database, devin, MagicMock(), REPO)
+    assert database.get_session(42, "s1")["pr_state"] == "merged"
+
+
+def test_resolve_acus_reports_unknown_rather_than_free(database):
+    """A failed lookup must not overwrite a figure an earlier cycle got right."""
+    devin = MagicMock()
+    devin.get_acus.return_value = None
+    assert resolve_acus(devin, [{"session_id": "p", "acus_consumed": 0.0}]) is None
+
+    database.upsert_session(
+        issue_number=42, devin_session_id="s1", status="running", acus_consumed=7.5
+    )
+    devin.get_session.return_value = dict(finished_session(), acus_consumed=0.0)
+    poll_once(database, devin, MagicMock(), REPO)
+    assert database.get_session(42, "s1")["acus_consumed"] == 7.5
+
+
+def test_a_simulated_row_is_not_matched_against_a_real_pull_request(database):
+    """Its PR number is random, so GitHub would answer about someone else's PR."""
+    database.upsert_session(
+        issue_number=42, devin_session_id="devin-dryrun-abc", status="exit",
+        pr_url=f"https://github.com/{REPO}/pull/731", pr_state="open",
+    )
+    devin = MagicMock()
+    devin.dry_run = False
+    github = MagicMock()
+    assert poll_once(database, devin, github, REPO).errors == []
+    github.get_pr.assert_not_called()
