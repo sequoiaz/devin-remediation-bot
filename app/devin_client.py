@@ -10,9 +10,12 @@ logger = logging.getLogger(__name__)
 
 DEVIN_API_BASE = "https://api.devin.ai/v3/organizations"
 
-# Consumption is billed and reported separately from the session itself, under the
-# enterprise scope rather than the organization one.
-CONSUMPTION_API_BASE = "https://api.devin.ai/v3/enterprise/consumption/daily/sessions"
+# Consumption is billed and reported separately from the session itself. It exists
+# under both scopes; the organization one is reachable with the same key that reads
+# sessions, while the enterprise one needs `ManageBilling`.
+ENTERPRISE_CONSUMPTION_URL = (
+    "https://api.devin.ai/v3/enterprise/consumption/daily/sessions"
+)
 
 # Sessions minted by DRY_RUN do not exist in the API; the prefix identifies them
 # once the bot is restarted with DRY_RUN off.
@@ -52,8 +55,8 @@ class DevinClient:
         self.dry_run = dry_run
         self.max_attempts = max_attempts
         self.backoff_base = backoff_base
-        # Reading consumption needs a key with `ManageBilling`; without one there is
-        # no point asking again on every poll cycle.
+        # A key that may read neither consumption scope will not start to; asking
+        # again on every poll cycle only adds failing requests.
         self.consumption_denied = False
 
     @property
@@ -172,26 +175,39 @@ class DevinClient:
         """ACUs billed to a session, or None when consumption cannot be read.
 
         The session payload reports `acus_consumed: 0.0` even for sessions that did
-        real work, so the consumption API is the number that matches billing.
+        real work, so the consumption API is the number that matches billing. It is
+        tried under the organization scope first, since that is what the key already
+        used for sessions can reach.
         """
         if self.dry_run or self.consumption_denied or not session_id:
             return None
         devin_id = (
             session_id if session_id.startswith("devin-") else f"devin-{session_id}"
         )
-        try:
-            data = self._request("GET", f"{CONSUMPTION_API_BASE}/{devin_id}")
-        except DevinAPIError as exc:
-            # 404 is per-session (no billing record yet), not a key problem.
-            if exc.status_code in (401, 403):
-                self.consumption_denied = True
-                logger.warning(
-                    "[devin] consumption unreadable (%s); ACUs fall back to the "
-                    "session payload",
-                    exc,
-                )
-            else:
+        urls = [
+            f"{self.base_url}/consumption/daily/sessions/{devin_id}",
+            f"{ENTERPRISE_CONSUMPTION_URL}/{devin_id}",
+        ]
+        denied = 0
+        for url in urls:
+            try:
+                data = self._request("GET", url)
+            except DevinAPIError as exc:
+                if exc.status_code in (401, 403):
+                    denied += 1
+                    continue
+                # 404 is per-session (no billing record yet), not a key problem.
+                if exc.status_code == 404:
+                    continue
                 logger.warning("[devin] consumption for %s failed: %s", devin_id, exc)
-            return None
-        total = data.get("total_acus")
-        return float(total) if isinstance(total, (int, float)) else None
+                return None
+            total = data.get("total_acus")
+            return float(total) if isinstance(total, (int, float)) else None
+
+        if denied == len(urls):
+            self.consumption_denied = True
+            logger.warning(
+                "[devin] this key may read neither consumption scope; ACUs fall "
+                "back to the session payload"
+            )
+        return None
