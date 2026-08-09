@@ -45,3 +45,20 @@ def test_dry_run_makes_no_network_call():
     req.assert_not_called()
     assert issue["number"] == 3
     assert issue["title"]
+
+
+def test_get_pr_state_reports_merged_separately_from_closed():
+    client = GitHubClient(token="t")
+    with patch.object(
+        client, "_request", return_value={"state": "closed", "merged": True}
+    ):
+        assert client.get_pr_state("https://github.com/o/r/pull/7") == "merged"
+    with patch.object(
+        client, "_request", return_value={"state": "closed", "merged": False}
+    ):
+        assert client.get_pr_state("https://github.com/o/r/pull/7") == "closed"
+
+
+def test_get_pr_state_ignores_a_url_that_is_not_a_pull_request():
+    client = GitHubClient(token="t")
+    assert client.get_pr_state("https://example.com/whatever") is None

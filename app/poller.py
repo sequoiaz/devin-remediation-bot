@@ -179,7 +179,48 @@ def poll_once(
                 new_status,
                 new_detail or "-",
             )
+    errors.extend(refresh_pr_states(db, github_client))
     return PollReport(updated, errors)
+
+
+PR_STATES = {"open", "closed", "merged"}
+SETTLED_PR_STATES = {"merged", "closed"}
+
+
+def refresh_pr_states(
+    db: Database, github_client: GitHubClient
+) -> List[Dict[str, Any]]:
+    """Keep the stored pull request state current after it is merged or closed.
+
+    A row whose session is done is never polled again, so its `pr_state` would stay
+    `open` forever; GitHub is the authority on what happened to the pull request.
+    """
+    errors: List[Dict[str, Any]] = []
+    for row in db.list_sessions():
+        pr_url = row.get("pr_url")
+        if not pr_url or row.get("pr_state") in SETTLED_PR_STATES:
+            continue
+        try:
+            state = github_client.get_pr_state(pr_url)
+        except GitHubAPIError as exc:
+            logger.error("[poll] pr=%s state unavailable: %s", pr_url, exc)
+            errors.append(
+                {
+                    "issue_number": row["issue_number"],
+                    "devin_session_id": row["devin_session_id"],
+                    "error": str(exc),
+                }
+            )
+            continue
+        if state not in PR_STATES or state == row.get("pr_state"):
+            continue
+        db.upsert_session(
+            issue_number=row["issue_number"],
+            devin_session_id=row["devin_session_id"],
+            pr_state=state,
+        )
+        logger.info("[poll] pr=%s is now %s", pr_url, state)
+    return errors
 
 
 async def poller_loop(
