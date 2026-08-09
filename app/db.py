@@ -146,6 +146,21 @@ class Database:
             )
         return self.get_session(issue_number, devin_session_id)
 
+    def set_pr_state(
+        self, issue_number: int, devin_session_id: str, pr_state: str
+    ) -> None:
+        """Update only the pull request state.
+
+        `upsert_session` overwrites `status_detail` unconditionally, so a caller that
+        knows nothing but the pull request cannot go through it.
+        """
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE sessions SET pr_state = ?, updated_at = ? "
+                "WHERE issue_number = ? AND devin_session_id = ?",
+                (pr_state, utcnow(), issue_number, devin_session_id),
+            )
+
     def record_poll(
         self, issue_number: int, devin_session_id: str, error: Optional[str] = None
     ) -> None:

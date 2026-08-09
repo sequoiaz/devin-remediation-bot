@@ -8,6 +8,9 @@ from app.github_client import GitHubAPIError, GitHubClient
 
 logger = logging.getLogger(__name__)
 
+PR_STATES = {"open", "closed", "merged"}
+SETTLED_PR_STATES = {"merged", "closed"}
+
 
 class PollReport(NamedTuple):
     """Outcome of one poll cycle: rows refreshed, plus per-row failures."""
@@ -125,6 +128,10 @@ def poll_once(
         pr = resolve_pr(devin_client, session, target_repo)
         pr_url = pr["url"] if pr else None
         had_pr = bool(row.get("pr_url"))
+        # A session keeps reporting the pull request as open after it is merged, so
+        # GitHub's verdict wins once it is in.
+        settled = row.get("pr_state") in SETTLED_PR_STATES
+        pr_state = None if settled or not pr else pr["state"]
 
         db.upsert_session(
             issue_number=issue_number,
@@ -133,7 +140,7 @@ def poll_once(
             status=new_status,
             status_detail=new_detail,
             pr_url=pr_url,
-            pr_state=pr["state"] if pr else None,
+            pr_state=pr_state,
             acus_consumed=session.get("acus_consumed"),
         )
         db.record_poll(issue_number, session_id)
@@ -183,10 +190,6 @@ def poll_once(
     return PollReport(updated, errors)
 
 
-PR_STATES = {"open", "closed", "merged"}
-SETTLED_PR_STATES = {"merged", "closed"}
-
-
 def refresh_pr_states(
     db: Database, github_client: GitHubClient
 ) -> List[Dict[str, Any]]:
@@ -214,11 +217,7 @@ def refresh_pr_states(
             continue
         if state not in PR_STATES or state == row.get("pr_state"):
             continue
-        db.upsert_session(
-            issue_number=row["issue_number"],
-            devin_session_id=row["devin_session_id"],
-            pr_state=state,
-        )
+        db.set_pr_state(row["issue_number"], row["devin_session_id"], state)
         logger.info("[poll] pr=%s is now %s", pr_url, state)
     return errors
 
