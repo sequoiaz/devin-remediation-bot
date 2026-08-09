@@ -275,6 +275,15 @@ def format_duration(seconds: Optional[float]) -> str:
     return f"{hours}h {minutes}m"
 
 
+def format_acus(value: Any) -> str:
+    """`n/a` rather than `0.00`, which reads as "this run was free".
+
+    Consumption is only reported for accounts whose usage the API exposes; a self
+    serve account is billed but reports nothing.
+    """
+    return f"{float(value):.2f}" if value else "n/a"
+
+
 def build_metrics() -> Dict[str, Any]:
     rows = get_database().list_sessions()
     sessions: List[Dict[str, Any]] = []
@@ -282,7 +291,7 @@ def build_metrics() -> Dict[str, Any]:
     completed_with_pr = 0
     failed_or_blocked = 0
     poll_errors = 0
-    total_acus = 0.0
+    total_acus: Optional[float] = None
 
     for row in rows:
         ttp = time_to_pr_seconds(row)
@@ -296,7 +305,8 @@ def build_metrics() -> Dict[str, Any]:
             failed_or_blocked += 1
         if row.get("last_poll_error"):
             poll_errors += 1
-        total_acus += float(row.get("acus_consumed") or 0)
+        if row.get("acus_consumed"):
+            total_acus = (total_acus or 0.0) + float(row["acus_consumed"])
         sessions.append(
             {
                 **row,
@@ -316,7 +326,7 @@ def build_metrics() -> Dict[str, Any]:
             "average_time_to_pr_seconds": (
                 round(sum(ttp_values) / len(ttp_values), 1) if ttp_values else None
             ),
-            "total_acus_consumed": round(total_acus, 2),
+            "total_acus_consumed": round(total_acus, 2) if total_acus else None,
         },
         "sessions": sessions,
     }
@@ -341,7 +351,7 @@ async def dashboard() -> HTMLResponse:
             ("Failed / blocked", summary["failed_or_blocked"]),
             ("Success rate", f"{summary['success_rate_pct']}%"),
             ("Avg time to PR", format_duration(summary["average_time_to_pr_seconds"])),
-            ("Total ACUs", summary["total_acus_consumed"]),
+            ("Total ACUs", format_acus(summary["total_acus_consumed"])),
         ]
     )
 
@@ -363,7 +373,7 @@ async def dashboard() -> HTMLResponse:
             f"<td>{html.escape(str(status))}</td>"
             f"<td>{pr_cell}</td>"
             f"<td>{html.escape(str(session.get('pr_state') or '-'))}</td>"
-            f"<td>{float(session.get('acus_consumed') or 0):.2f}</td>"
+            f"<td>{format_acus(session.get('acus_consumed'))}</td>"
             f"<td>{html.escape(str(session.get('created_at') or '-'))}</td>"
             f"<td>{html.escape(str(session.get('updated_at') or '-'))}</td>"
             f"<td>{html.escape(format_duration(session.get('time_to_pr_seconds')))}</td>"
