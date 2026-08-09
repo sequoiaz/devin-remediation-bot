@@ -103,8 +103,23 @@ def test_get_acus_reads_the_consumption_api():
     ) as req:
         assert client.get_acus("799dfa97") == 7.5
     url = req.call_args[0][1]
-    # Consumption addresses sessions by their prefixed id.
-    assert url.endswith("/consumption/daily/sessions/devin-799dfa97")
+    # The organization scope is tried first, and addresses sessions by prefixed id.
+    assert url == (
+        "https://api.devin.ai/v3/organizations/org-123"
+        "/consumption/daily/sessions/devin-799dfa97"
+    )
+
+
+def test_get_acus_falls_back_to_the_enterprise_scope():
+    """An org-scoped key may be refused there but allowed at enterprise level."""
+    client = make_client()
+    with patch(
+        "app.devin_client.requests.request",
+        side_effect=[response(403), response(200, {"total_acus": 7.5})],
+    ) as req:
+        assert client.get_acus("s1") == 7.5
+    assert req.call_args[0][1].startswith("https://api.devin.ai/v3/enterprise/")
+    assert not client.consumption_denied
 
 
 def test_get_acus_stops_asking_once_the_key_is_not_allowed():
@@ -114,7 +129,8 @@ def test_get_acus_stops_asking_once_the_key_is_not_allowed():
     ) as req:
         assert client.get_acus("s1") is None
         assert client.get_acus("s2") is None
-    assert req.call_count == 1
+    # Both scopes tried once, then never again.
+    assert req.call_count == 2
     assert client.consumption_denied
 
 
@@ -124,3 +140,14 @@ def test_a_missing_billing_record_keeps_other_sessions_billable():
     with patch("app.devin_client.requests.request", return_value=response(404)):
         assert client.get_acus("s1") is None
     assert not client.consumption_denied
+
+
+def test_one_scope_refusing_is_enough_to_stop_asking():
+    """The other answering 404 does not make the key any more allowed."""
+    client = make_client()
+    with patch(
+        "app.devin_client.requests.request",
+        side_effect=[response(404), response(403)],
+    ):
+        assert client.get_acus("s1") is None
+    assert client.consumption_denied
