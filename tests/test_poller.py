@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock
 
 from app.devin_client import DevinAPIError
-from app.poller import extract_pr, poll_once
+from app.poller import extract_pr, poll_once, resolve_pr
 
 REPO = "fake-org/fake-repo"
 
@@ -38,6 +38,32 @@ def test_extract_pr_prefers_the_target_repo():
     }
     # No match for the target repo falls back to the first pull request.
     assert extract_pr(session, "unrelated/repo")["url"].endswith("/tooling/pull/2")
+
+
+def test_resolve_pr_follows_a_session_that_delegated_to_a_child():
+    """A session that spawns children keeps no pull request of its own."""
+    parent = {"session_id": "p", "pull_requests": [], "child_session_ids": ["c"]}
+    devin = MagicMock()
+    devin.get_session.return_value = finished_session("c")
+    assert resolve_pr(devin, parent, REPO)["url"] == f"https://github.com/{REPO}/pull/9"
+    devin.get_session.assert_called_once_with("c")
+
+
+def test_resolve_pr_prefers_the_parents_own_pull_request():
+    devin = MagicMock()
+    parent = dict(finished_session("p"), child_session_ids=["c"])
+    assert resolve_pr(devin, parent, REPO)["url"] == f"https://github.com/{REPO}/pull/9"
+    devin.get_session.assert_not_called()
+
+
+def test_resolve_pr_survives_an_unreadable_child():
+    parent = {"session_id": "p", "pull_requests": [], "child_session_ids": ["c", "d"]}
+    devin = MagicMock()
+    devin.get_session.side_effect = [
+        DevinAPIError("gone"),
+        finished_session("d"),
+    ]
+    assert resolve_pr(devin, parent, REPO)["url"] == f"https://github.com/{REPO}/pull/9"
 
 
 def test_transitions_to_terminal_and_comments_once(database):

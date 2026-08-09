@@ -41,6 +41,32 @@ def extract_pr(
     return prs[0]
 
 
+def resolve_pr(
+    devin_client: DevinClient,
+    session: Dict[str, Any],
+    target_repo: Optional[str] = None,
+    max_depth: int = 2,
+) -> Optional[Dict[str, Any]]:
+    """Pull request of a session, or of a descendant it delegated the work to.
+
+    A session that spawns children keeps an empty `pull_requests` of its own, so
+    the PR has to be looked up on `child_session_ids`.
+    """
+    pr = extract_pr(session, target_repo)
+    if pr or max_depth <= 0:
+        return pr
+    for child_id in session.get("child_session_ids") or []:
+        try:
+            child = devin_client.get_session(child_id)
+        except DevinAPIError as exc:
+            logger.warning("[poll] child session=%s unreadable: %s", child_id, exc)
+            continue
+        pr = resolve_pr(devin_client, child, target_repo, max_depth - 1)
+        if pr:
+            return pr
+    return None
+
+
 def poll_once(
     db: Database,
     devin_client: DevinClient,
@@ -96,7 +122,7 @@ def poll_once(
         old_status = row.get("status")
         new_status = session.get("status")
         new_detail = session.get("status_detail")
-        pr = extract_pr(session, target_repo)
+        pr = resolve_pr(devin_client, session, target_repo)
         pr_url = pr["url"] if pr else None
         had_pr = bool(row.get("pr_url"))
 
