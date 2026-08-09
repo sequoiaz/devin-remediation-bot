@@ -93,3 +93,26 @@ def test_dry_run_makes_no_network_call(sample_issue):
         "https://github.com/fake-org/fake-repo/pull/"
     )
     assert fetched["acus_consumed"] > 0
+
+
+def test_get_acus_reads_the_consumption_api():
+    client = make_client()
+    with patch(
+        "app.devin_client.requests.request",
+        return_value=response(200, {"total_acus": 7.5}),
+    ) as req:
+        assert client.get_acus("799dfa97") == 7.5
+    url = req.call_args[0][1]
+    # Consumption addresses sessions by their prefixed id.
+    assert url.endswith("/consumption/daily/sessions/devin-799dfa97")
+
+
+def test_get_acus_stops_asking_once_the_key_is_not_allowed():
+    client = make_client()
+    with patch(
+        "app.devin_client.requests.request", return_value=response(403)
+    ) as req:
+        assert client.get_acus("s1") is None
+        assert client.get_acus("s2") is None
+    assert req.call_count == 1
+    assert client.consumption_denied

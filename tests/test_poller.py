@@ -3,7 +3,13 @@ from unittest.mock import MagicMock
 
 from app.devin_client import DevinAPIError
 from app.github_client import GitHubAPIError
-from app.poller import extract_pr, poll_once, resolve_pr
+from app.poller import (
+    extract_pr,
+    poll_once,
+    resolve_acus,
+    resolve_pr,
+    session_tree,
+)
 
 REPO = "fake-org/fake-repo"
 
@@ -47,15 +53,19 @@ def test_resolve_pr_follows_a_session_that_delegated_to_a_child():
     parent = {"session_id": "p", "pull_requests": [], "child_session_ids": ["c"]}
     devin = MagicMock()
     devin.get_session.return_value = finished_session("c")
-    assert resolve_pr(devin, parent, REPO)["url"] == f"https://github.com/{REPO}/pull/9"
+    tree = session_tree(devin, parent)
+    assert resolve_pr(tree, REPO)["url"] == f"https://github.com/{REPO}/pull/9"
     devin.get_session.assert_called_once_with("c")
 
 
 def test_resolve_pr_prefers_the_parents_own_pull_request():
     devin = MagicMock()
+    devin.get_session.return_value = finished_session(
+        "c", f"https://github.com/{REPO}/pull/11"
+    )
     parent = dict(finished_session("p"), child_session_ids=["c"])
-    assert resolve_pr(devin, parent, REPO)["url"] == f"https://github.com/{REPO}/pull/9"
-    devin.get_session.assert_not_called()
+    tree = session_tree(devin, parent)
+    assert resolve_pr(tree, REPO)["url"] == f"https://github.com/{REPO}/pull/9"
 
 
 def test_resolve_pr_survives_an_unreadable_child():
@@ -65,7 +75,26 @@ def test_resolve_pr_survives_an_unreadable_child():
         DevinAPIError("gone"),
         finished_session("d"),
     ]
-    assert resolve_pr(devin, parent, REPO)["url"] == f"https://github.com/{REPO}/pull/9"
+    tree = session_tree(devin, parent)
+    assert resolve_pr(tree, REPO)["url"] == f"https://github.com/{REPO}/pull/9"
+
+
+def test_resolve_acus_bills_the_whole_tree_through_the_consumption_api():
+    """Session payloads report 0.0 even for work that was billed."""
+    devin = MagicMock()
+    devin.get_acus.side_effect = lambda session_id: {"p": 0.0, "c": 7.5}[session_id]
+    tree = [
+        {"session_id": "p", "acus_consumed": 0.0},
+        {"session_id": "c", "acus_consumed": 0.0},
+    ]
+    assert resolve_acus(devin, tree) == 7.5
+
+
+def test_resolve_acus_falls_back_to_the_session_payload():
+    """Consumption needs a `ManageBilling` key, which the bot may not have."""
+    devin = MagicMock()
+    devin.get_acus.return_value = None
+    assert resolve_acus(devin, [{"session_id": "p", "acus_consumed": 4.25}]) == 4.25
 
 
 def test_transitions_to_terminal_and_comments_once(database):
