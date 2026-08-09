@@ -18,8 +18,8 @@ dashboard.
 A session stays in-flight until its lifecycle ends (`status` is `exit`/`error`) or it
 reports `status_detail == "finished"` *and* its pull request has been captured, so a PR
 published after the agent declares itself finished still reaches the dashboard. Failed
-polls are recorded per row and shown in the dashboard's **Last poll** column and the
-`poll_errors` metric instead of only reaching the log.
+polls are recorded per row and reported through the `poll_errors` metric and the `/refresh`
+response instead of only reaching the log; the dashboard itself stays free of poll plumbing.
 
 ## Setup
 
