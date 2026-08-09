@@ -79,6 +79,7 @@ Other endpoints:
 
 ```bash
 curl -X POST http://localhost:8000/refresh   # poll in-flight sessions now
+curl -X POST 'http://localhost:8000/refresh?force=true'  # also re-poll completed rows
 curl http://localhost:8000/health
 curl http://localhost:8000/metrics
 open http://localhost:8000/dashboard

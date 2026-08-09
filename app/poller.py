@@ -39,10 +39,16 @@ def poll_once(
     devin_client: DevinClient,
     github_client: GitHubClient,
     target_repo: str,
+    force: bool = False,
 ) -> int:
-    """Refresh every non-terminal session. Returns the number of rows updated."""
+    """Refresh every non-terminal session. Returns the number of rows updated.
+
+    `force` also refreshes rows that already count as done, which recovers a row
+    an earlier version of the bot left terminal without ever recording its PR.
+    """
+    rows = db.list_sessions() if force else db.list_non_terminal_sessions()
     updated = 0
-    for row in db.list_non_terminal_sessions():
+    for row in rows:
         session_id = row["devin_session_id"]
         issue_number = row["issue_number"]
         try:

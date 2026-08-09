@@ -165,8 +165,12 @@ async def github_webhook(
 
 
 @app.post("/refresh")
-async def refresh() -> Dict[str, Any]:
-    """Poll every in-flight session immediately instead of waiting for the loop."""
+async def refresh(force: bool = False) -> Dict[str, Any]:
+    """Poll every in-flight session immediately instead of waiting for the loop.
+
+    `?force=true` also re-polls rows that already count as done, for a row an
+    earlier version of the bot completed without ever recording its PR.
+    """
     settings = get_settings()
     updated = await asyncio.to_thread(
         poll_once,
@@ -174,8 +178,9 @@ async def refresh() -> Dict[str, Any]:
         get_devin_client(),
         get_github_client(),
         settings.target_repo,
+        force,
     )
-    return {"status": "ok", "sessions_refreshed": updated}
+    return {"status": "ok", "sessions_refreshed": updated, "forced": force}
 
 
 @app.post("/simulate")
