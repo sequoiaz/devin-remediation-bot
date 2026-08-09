@@ -51,6 +51,9 @@ def poll_once(
     for row in rows:
         session_id = row["devin_session_id"]
         issue_number = row["issue_number"]
+        was_done = is_done(
+            row.get("status"), row.get("status_detail"), row.get("pr_url")
+        )
         try:
             session = devin_client.get_session(session_id)
         except DevinAPIError as exc:
@@ -60,7 +63,9 @@ def poll_once(
                 issue_number,
                 exc,
             )
-            db.record_poll(issue_number, session_id, error=str(exc))
+            # Nothing polls a done row again, so a stored error would never clear.
+            if not was_done:
+                db.record_poll(issue_number, session_id, error=str(exc))
             continue
 
         old_status = row.get("status")

@@ -141,3 +141,12 @@ def test_devin_error_leaves_row_untouched(database):
     devin.get_session.return_value = finished_session()
     poll_once(database, devin, github, REPO)
     assert database.get_session(42, "s1")["last_poll_error"] is None
+
+
+def test_forced_poll_does_not_stick_an_error_on_a_done_row(database):
+    """Nothing polls a done row again, so its error would never be cleared."""
+    database.upsert_session(issue_number=42, devin_session_id="s1", status="exit")
+    devin = MagicMock()
+    devin.get_session.side_effect = DevinAPIError("session no longer exists")
+    assert poll_once(database, devin, MagicMock(), REPO, force=True) == 0
+    assert database.get_session(42, "s1")["last_poll_error"] is None
