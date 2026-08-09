@@ -9,6 +9,9 @@ TERMINAL_STATUSES = {"exit", "error"}
 
 # A session reports `status_detail == "finished"` while `status` is still `running`
 # once the agent considers the task complete, which is what the dashboard cares about.
+# It can report that before the PR shows up in `pull_requests`, so a finished session
+# only counts as done once its PR has been captured; otherwise it keeps being polled
+# until the lifecycle ends and the PR link would never reach the dashboard.
 FINISHED_DETAIL = "finished"
 
 # `status_detail` values that mean the session cannot make progress on its own.
@@ -29,23 +32,41 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     completed_at TEXT,
+    last_polled_at TEXT,
+    last_poll_error TEXT,
     UNIQUE (issue_number, devin_session_id)
 );
 """
 
-# Rows that are done: the lifecycle ended, or the agent reported the task finished.
+# Rows that are done: the lifecycle ended, or the agent reported the task finished
+# and we already know its pull request.
 DONE_PREDICATE = (
-    "(COALESCE(status, '') IN ({terminal}) OR COALESCE(status_detail, '') = ?)"
+    "(COALESCE(status, '') IN ({terminal})"
+    " OR (COALESCE(status_detail, '') = ? AND COALESCE(pr_url, '') != ''))"
 ).format(terminal=", ".join("?" for _ in TERMINAL_STATUSES))
 DONE_PARAMS = (*TERMINAL_STATUSES, FINISHED_DETAIL)
+
+NEW_COLUMNS = {
+    # Databases created before the v3 field names were fixed have the invented
+    # `status_enum` column instead of `status_detail`.
+    "status_detail": "TEXT",
+    "last_polled_at": "TEXT",
+    "last_poll_error": "TEXT",
+}
 
 
 def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def is_done(status: Optional[str], status_detail: Optional[str] = None) -> bool:
-    return (status or "") in TERMINAL_STATUSES or (status_detail or "") == FINISHED_DETAIL
+def is_done(
+    status: Optional[str],
+    status_detail: Optional[str] = None,
+    pr_url: Optional[str] = None,
+) -> bool:
+    if (status or "") in TERMINAL_STATUSES:
+        return True
+    return (status_detail or "") == FINISHED_DETAIL and bool(pr_url)
 
 
 class Database:
@@ -67,10 +88,11 @@ class Database:
             columns = {
                 row["name"] for row in conn.execute("PRAGMA table_info(sessions)")
             }
-            # Databases created before the v3 field names were fixed have the
-            # invented `status_enum` column instead of `status_detail`.
-            if "status_detail" not in columns:
-                conn.execute("ALTER TABLE sessions ADD COLUMN status_detail TEXT")
+            for name, column_type in NEW_COLUMNS.items():
+                if name not in columns:
+                    conn.execute(
+                        f"ALTER TABLE sessions ADD COLUMN {name} {column_type}"
+                    )
 
     def upsert_session(
         self,
@@ -87,7 +109,7 @@ class Database:
         """Insert a session row, or update it in place when the
         (issue_number, devin_session_id) pair already exists."""
         now = utcnow()
-        completed_at = now if is_done(status, status_detail) else None
+        completed_at = now if is_done(status, status_detail, pr_url) else None
         with self.connect() as conn:
             conn.execute(
                 """
@@ -123,6 +145,17 @@ class Database:
                 ),
             )
         return self.get_session(issue_number, devin_session_id)
+
+    def record_poll(
+        self, issue_number: int, devin_session_id: str, error: Optional[str] = None
+    ) -> None:
+        """Stamp the outcome of a poll cycle so failures are visible on the dashboard."""
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE sessions SET last_polled_at = ?, last_poll_error = ? "
+                "WHERE issue_number = ? AND devin_session_id = ?",
+                (utcnow(), error, issue_number, devin_session_id),
+            )
 
     def get_session(self, issue_number: int, devin_session_id: str) -> Dict[str, Any]:
         with self.connect() as conn:

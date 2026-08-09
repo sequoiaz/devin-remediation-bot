@@ -9,15 +9,29 @@ from app.github_client import GitHubAPIError, GitHubClient
 logger = logging.getLogger(__name__)
 
 
-def extract_pr(session: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """First pull request of a v3 session, whose entries are `{pr_url, pr_state}`."""
-    pull_requests = session.get("pull_requests") or []
-    if not pull_requests:
+def _as_pr(entry: Any) -> Dict[str, Any]:
+    if isinstance(entry, str):
+        return {"url": entry, "state": None}
+    return {"url": entry.get("pr_url"), "state": entry.get("pr_state")}
+
+
+def extract_pr(
+    session: Dict[str, Any], target_repo: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
+    """Pull request of a v3 session, whose entries are `{pr_url, pr_state}`.
+
+    A session can open pull requests against several repositories, so the one
+    belonging to `target_repo` wins over document order.
+    """
+    prs = [_as_pr(entry) for entry in session.get("pull_requests") or []]
+    prs = [pr for pr in prs if pr["url"]]
+    if not prs:
         return None
-    first = pull_requests[0]
-    if isinstance(first, str):
-        return {"url": first, "state": None}
-    return {"url": first.get("pr_url"), "state": first.get("pr_state")}
+    if target_repo:
+        for pr in prs:
+            if f"/{target_repo}/pull/" in pr["url"]:
+                return pr
+    return prs[0]
 
 
 def poll_once(
@@ -40,12 +54,13 @@ def poll_once(
                 issue_number,
                 exc,
             )
+            db.record_poll(issue_number, session_id, error=str(exc))
             continue
 
         old_status = row.get("status")
         new_status = session.get("status")
         new_detail = session.get("status_detail")
-        pr = extract_pr(session)
+        pr = extract_pr(session, target_repo)
         pr_url = pr["url"] if pr else None
         had_pr = bool(row.get("pr_url"))
 
@@ -59,6 +74,7 @@ def poll_once(
             pr_state=pr["state"] if pr else None,
             acus_consumed=session.get("acus_consumed"),
         )
+        db.record_poll(issue_number, session_id)
         updated += 1
         logger.info(
             "[poll] session=%s issue=#%s status=%s -> %s (%s)",
@@ -90,7 +106,7 @@ def poll_once(
                     exc,
                 )
 
-        if is_done(new_status, new_detail):
+        if is_done(new_status, new_detail, pr_url):
             logger.info(
                 "[poll] session=%s issue=#%s is done (status=%s detail=%s)",
                 session_id,

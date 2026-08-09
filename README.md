@@ -9,11 +9,17 @@ dashboard.
 
 | File | Responsibility |
 | --- | --- |
-| `app/main.py` | FastAPI routes: `/webhook/github`, `/simulate`, `/dashboard`, `/metrics`, `/health` |
+| `app/main.py` | FastAPI routes: `/webhook/github`, `/simulate`, `/refresh`, `/dashboard`, `/metrics`, `/health` |
 | `app/devin_client.py` | Devin v3 API wrapper (create/get session) with retries and `dry_run` |
 | `app/github_client.py` | GitHub REST wrapper (get issue, post comment) with retries and `dry_run` |
 | `app/db.py` | SQLite `sessions` table, upsert keyed on `(issue_number, devin_session_id)` |
 | `app/poller.py` | Background poller (every 20s) refreshing non-terminal sessions |
+
+A session stays in-flight until its lifecycle ends (`status` is `exit`/`error`) or it
+reports `status_detail == "finished"` *and* its pull request has been captured, so a PR
+published after the agent declares itself finished still reaches the dashboard. Failed
+polls are recorded per row and shown in the dashboard's **Last poll** column and the
+`poll_errors` metric instead of only reaching the log.
 
 ## Setup
 
@@ -72,6 +78,7 @@ curl -X POST http://localhost:8000/simulate \
 Other endpoints:
 
 ```bash
+curl -X POST http://localhost:8000/refresh   # poll in-flight sessions now
 curl http://localhost:8000/health
 curl http://localhost:8000/metrics
 open http://localhost:8000/dashboard

@@ -4,6 +4,7 @@ import json
 from unittest.mock import MagicMock, patch
 
 from app.db import get_db
+from app.devin_client import DevinAPIError
 from tests.conftest import TARGET_REPO, WEBHOOK_SECRET
 
 
@@ -184,6 +185,43 @@ def test_metrics_and_dashboard_shape(client, env):
     assert "3.5" in html
     # `status_detail` qualifies the bare lifecycle status in the Status column.
     assert "running (waiting_for_user)" in html
+
+
+def test_refresh_polls_in_flight_sessions_on_demand(client, env):
+    db = get_db(env)
+    db.upsert_session(issue_number=1, devin_session_id="s1", status="running")
+    devin = MagicMock()
+    devin.get_session.return_value = {
+        "session_id": "s1",
+        "url": "https://app.devin.ai/sessions/s1",
+        "status": "exit",
+        "status_detail": None,
+        "pull_requests": [{"pr_url": f"https://github.com/{TARGET_REPO}/pull/9", "pr_state": "open"}],
+        "acus_consumed": 2.0,
+    }
+    with patch("app.main.get_devin_client", return_value=devin), patch(
+        "app.main.get_github_client", return_value=MagicMock()
+    ):
+        response = client.post("/refresh")
+
+    assert response.json() == {"status": "ok", "sessions_refreshed": 1}
+    row = db.get_session(1, "s1")
+    assert row["pr_url"] == f"https://github.com/{TARGET_REPO}/pull/9"
+    assert row["status"] == "exit"
+
+
+def test_poll_failures_are_visible(client, env):
+    db = get_db(env)
+    db.upsert_session(issue_number=1, devin_session_id="s1", status="running")
+    devin = MagicMock()
+    devin.get_session.side_effect = DevinAPIError("HTTP 401 from the Devin API")
+    with patch("app.main.get_devin_client", return_value=devin), patch(
+        "app.main.get_github_client", return_value=MagicMock()
+    ):
+        client.post("/refresh")
+
+    assert client.get("/metrics").json()["summary"]["poll_errors"] == 1
+    assert "HTTP 401 from the Devin API" in client.get("/dashboard").text
 
 
 def test_metrics_empty(client):
