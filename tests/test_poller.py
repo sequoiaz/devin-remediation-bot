@@ -348,3 +348,16 @@ def test_resolve_acus_reports_unknown_rather_than_free(database):
     devin.get_session.return_value = dict(finished_session(), acus_consumed=0.0)
     poll_once(database, devin, MagicMock(), REPO)
     assert database.get_session(42, "s1")["acus_consumed"] == 7.5
+
+
+def test_a_simulated_row_is_not_matched_against_a_real_pull_request(database):
+    """Its PR number is random, so GitHub would answer about someone else's PR."""
+    database.upsert_session(
+        issue_number=42, devin_session_id="devin-dryrun-abc", status="exit",
+        pr_url=f"https://github.com/{REPO}/pull/731", pr_state="open",
+    )
+    devin = MagicMock()
+    devin.dry_run = False
+    github = MagicMock()
+    assert poll_once(database, devin, github, REPO).errors == []
+    github.get_pr.assert_not_called()

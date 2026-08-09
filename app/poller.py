@@ -12,6 +12,15 @@ PR_STATES = {"open", "closed", "merged"}
 SETTLED_PR_STATES = {"merged", "closed"}
 
 
+def is_simulated(session_id: str, devin_client: DevinClient) -> bool:
+    """A row minted by DRY_RUN, seen by a bot that is no longer simulating.
+
+    Neither its session nor its pull request exists, and its PR number is random,
+    so it could otherwise be matched against an unrelated real pull request.
+    """
+    return session_id.startswith(DRY_RUN_SESSION_PREFIX) and not devin_client.dry_run
+
+
 class PollReport(NamedTuple):
     """Outcome of one poll cycle: rows refreshed, plus per-row failures."""
 
@@ -118,7 +127,7 @@ def poll_once(
         was_done = is_done(
             row.get("status"), row.get("status_detail"), row.get("pr_url")
         )
-        if session_id.startswith(DRY_RUN_SESSION_PREFIX) and not devin_client.dry_run:
+        if is_simulated(session_id, devin_client):
             # Simulated session: the API never knew it, so polling only yields 403s.
             logger.debug(
                 "[poll] session=%s issue=#%s is simulated, skipping",
@@ -214,12 +223,12 @@ def poll_once(
                 new_status,
                 new_detail or "-",
             )
-    errors.extend(refresh_pr_states(db, github_client))
+    errors.extend(refresh_pr_states(db, devin_client, github_client))
     return PollReport(updated, errors)
 
 
 def refresh_pr_states(
-    db: Database, github_client: GitHubClient
+    db: Database, devin_client: DevinClient, github_client: GitHubClient
 ) -> List[Dict[str, Any]]:
     """Keep what GitHub knows about each pull request current.
 
@@ -232,6 +241,8 @@ def refresh_pr_states(
         pr_url = row.get("pr_url")
         settled = row.get("pr_state") in SETTLED_PR_STATES
         if not pr_url or (settled and row.get("pr_created_at")):
+            continue
+        if is_simulated(row["devin_session_id"], devin_client):
             continue
         try:
             pr = github_client.get_pr(pr_url)
