@@ -274,3 +274,10 @@ def test_time_to_pr_measures_when_the_pr_was_opened(env):
     # GitHub spells UTC `Z`, which fromisoformat rejects before Python 3.11.
     db.record_pr(1, "s1", "open", opened.isoformat().replace("+00:00", "Z"))
     assert time_to_pr_seconds(db.get_session(1, "s1")) == 12 * 60
+
+
+def test_unreported_acus_show_as_not_available(client, env):
+    """0.00 would read as free; a self-serve account is billed but reports nothing."""
+    get_db(env).upsert_session(issue_number=1, devin_session_id="s1", status="exit")
+    assert client.get("/metrics").json()["summary"]["total_acus_consumed"] is None
+    assert "n/a" in client.get("/dashboard").text

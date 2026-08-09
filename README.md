@@ -33,7 +33,9 @@ a delegating parent is billed nothing. The organization scope
 (`/v3/organizations/{org}/consumption/daily/sessions/{id}`) is asked first, since the key
 that already reads sessions can usually reach it, then the enterprise one, which needs
 `ManageBilling`. If both refuse, the bot logs once and falls back to the session payload's
-figure.
+figure. Self-serve accounts are billed but report no consumption through the API at all
+(usage is only visible in Session Insights and Settings > Plans), so a session that reports
+nothing shows **n/a** rather than `0.00`, which would read as "this remediation was free".
 
 ## Setup
 
