@@ -172,7 +172,7 @@ async def refresh(force: bool = False) -> Dict[str, Any]:
     earlier version of the bot completed without ever recording its PR.
     """
     settings = get_settings()
-    updated = await asyncio.to_thread(
+    report = await asyncio.to_thread(
         poll_once,
         get_database(),
         get_devin_client(),
@@ -180,7 +180,12 @@ async def refresh(force: bool = False) -> Dict[str, Any]:
         settings.target_repo,
         force,
     )
-    return {"status": "ok", "sessions_refreshed": updated, "forced": force}
+    return {
+        "status": "ok",
+        "sessions_refreshed": report.updated,
+        "forced": force,
+        "errors": report.errors,
+    }
 
 
 @app.post("/simulate")
@@ -325,7 +330,6 @@ async def dashboard() -> HTMLResponse:
             ("Total triggered", summary["total_triggered"]),
             ("Completed with PR", summary["completed_with_pr"]),
             ("Failed / blocked", summary["failed_or_blocked"]),
-            ("Poll errors", summary["poll_errors"]),
             ("Success rate", f"{summary['success_rate_pct']}%"),
             ("Avg time to PR", format_duration(summary["average_time_to_pr_seconds"])),
             ("Total ACUs", summary["total_acus_consumed"]),
@@ -343,12 +347,6 @@ async def dashboard() -> HTMLResponse:
         session_cell = (
             f'<a href="{html.escape(session_url)}">session</a>' if session_url else "-"
         )
-        poll_error = session.get("last_poll_error")
-        poll_cell = (
-            f'<span class="error">{html.escape(str(poll_error))}</span>'
-            if poll_error
-            else html.escape(str(session.get("last_polled_at") or "-"))
-        )
         rows_html.append(
             "<tr>"
             f"<td>#{html.escape(str(session.get('issue_number')))}</td>"
@@ -359,7 +357,6 @@ async def dashboard() -> HTMLResponse:
             f"<td>{html.escape(str(session.get('created_at') or '-'))}</td>"
             f"<td>{html.escape(str(session.get('updated_at') or '-'))}</td>"
             f"<td>{html.escape(format_duration(session.get('time_to_pr_seconds')))}</td>"
-            f"<td>{poll_cell}</td>"
             f"<td>{session_cell}</td>"
             "</tr>"
         )
@@ -379,7 +376,6 @@ h1 {{ font-size: 1.5rem; }}
 table {{ border-collapse: collapse; width: 100%; }}
 th, td {{ border-bottom: 1px solid #eee; padding: 0.5rem 0.75rem; text-align: left; font-size: 0.9rem; }}
 th {{ background: #fafafa; }}
-.error {{ color: #b3261e; }}
 </style>
 </head>
 <body>
@@ -388,9 +384,9 @@ th {{ background: #fafafa; }}
 <table>
 <thead><tr>
 <th>Issue</th><th>Title</th><th>Status</th><th>PR</th><th>ACUs</th>
-<th>Created</th><th>Updated</th><th>Time to PR</th><th>Last poll</th><th>Devin</th>
+<th>Created</th><th>Updated</th><th>Time to PR</th><th>Devin</th>
 </tr></thead>
-<tbody>{''.join(rows_html) or '<tr><td colspan="10">No sessions yet.</td></tr>'}</tbody>
+<tbody>{''.join(rows_html) or '<tr><td colspan="9">No sessions yet.</td></tr>'}</tbody>
 </table>
 </body>
 </html>"""

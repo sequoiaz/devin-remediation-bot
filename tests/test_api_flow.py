@@ -204,7 +204,12 @@ def test_refresh_polls_in_flight_sessions_on_demand(client, env):
     ):
         response = client.post("/refresh")
 
-    assert response.json() == {"status": "ok", "sessions_refreshed": 1, "forced": False}
+    assert response.json() == {
+        "status": "ok",
+        "sessions_refreshed": 1,
+        "forced": False,
+        "errors": [],
+    }
     row = db.get_session(1, "s1")
     assert row["pr_url"] == f"https://github.com/{TARGET_REPO}/pull/9"
     assert row["status"] == "exit"
@@ -232,7 +237,7 @@ def test_forced_refresh_recovers_a_done_row_with_no_pr(client, env):
     assert db.get_session(1, "s1")["pr_url"] == f"https://github.com/{TARGET_REPO}/pull/9"
 
 
-def test_poll_failures_are_visible(client, env):
+def test_poll_failures_are_reported_by_the_api(client, env):
     db = get_db(env)
     db.upsert_session(issue_number=1, devin_session_id="s1", status="running")
     devin = MagicMock()
@@ -242,8 +247,9 @@ def test_poll_failures_are_visible(client, env):
     ):
         client.post("/refresh")
 
+    # Reported by the API, deliberately not rendered on the dashboard.
     assert client.get("/metrics").json()["summary"]["poll_errors"] == 1
-    assert "HTTP 401 from the Devin API" in client.get("/dashboard").text
+    assert "HTTP 401 from the Devin API" not in client.get("/dashboard").text
 
 
 def test_metrics_empty(client):
