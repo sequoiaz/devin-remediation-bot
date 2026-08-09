@@ -171,7 +171,7 @@ def poll_once(
                     exc,
                 )
 
-        if changed and is_done(new_status, new_detail, pr_url):
+        if not was_done and is_done(new_status, new_detail, pr_url):
             logger.info(
                 "[poll] session=%s issue=#%s is done (status=%s detail=%s)",
                 session_id,

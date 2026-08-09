@@ -186,6 +186,19 @@ def test_unchanged_sessions_do_not_log_every_cycle(database, caplog):
     assert caplog.records == []
 
 
+def test_completion_is_announced_when_only_the_pr_appears(database, caplog):
+    """The row becomes done via its PR, with status and detail both unchanged."""
+    database.upsert_session(
+        issue_number=42, devin_session_id="s1", status="running",
+        status_detail="finished",
+    )
+    devin = MagicMock()
+    devin.get_session.return_value = finished_session()
+    with caplog.at_level(logging.INFO, logger="app.poller"):
+        poll_once(database, devin, MagicMock(), REPO)
+    assert any("is done" in record.getMessage() for record in caplog.records)
+
+
 def test_simulated_sessions_are_never_polled_against_the_api(database):
     """DRY_RUN rows outlive the dry run and would 403 forever against the API."""
     database.upsert_session(
