@@ -334,3 +334,17 @@ def test_a_session_cannot_reopen_a_merged_pull_request(database):
     devin.get_session.return_value = finished_session()
     poll_once(database, devin, MagicMock(), REPO)
     assert database.get_session(42, "s1")["pr_state"] == "merged"
+
+
+def test_resolve_acus_reports_unknown_rather_than_free(database):
+    """A failed lookup must not overwrite a figure an earlier cycle got right."""
+    devin = MagicMock()
+    devin.get_acus.return_value = None
+    assert resolve_acus(devin, [{"session_id": "p", "acus_consumed": 0.0}]) is None
+
+    database.upsert_session(
+        issue_number=42, devin_session_id="s1", status="running", acus_consumed=7.5
+    )
+    devin.get_session.return_value = dict(finished_session(), acus_consumed=0.0)
+    poll_once(database, devin, MagicMock(), REPO)
+    assert database.get_session(42, "s1")["acus_consumed"] == 7.5

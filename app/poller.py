@@ -76,19 +76,24 @@ def resolve_pr(
     return None
 
 
-def resolve_acus(devin_client: DevinClient, sessions: List[Dict[str, Any]]) -> float:
-    """ACUs billed across a session tree.
+def resolve_acus(
+    devin_client: DevinClient, sessions: List[Dict[str, Any]]
+) -> Optional[float]:
+    """ACUs billed across a session tree, or None when nothing could be read.
 
     A session payload reports `acus_consumed: 0.0` even when it did real work, and
     a parent that delegates is billed nothing, so consumption is asked for per
-    session and the payload is only a fallback.
+    session and the payload is only a fallback. A tree that yields nothing but
+    zeroes is reported as unknown rather than free, so a cycle where consumption is
+    unreachable cannot overwrite a figure an earlier cycle got right.
     """
-    total = 0.0
+    total: Optional[float] = None
     for session in sessions:
         billed = devin_client.get_acus(session.get("session_id") or "")
         if not isinstance(billed, (int, float)):
-            billed = session.get("acus_consumed") or 0
-        total += float(billed) if isinstance(billed, (int, float)) else 0.0
+            billed = session.get("acus_consumed")
+        if isinstance(billed, (int, float)) and billed:
+            total = (total or 0.0) + float(billed)
     return total
 
 

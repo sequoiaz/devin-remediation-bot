@@ -116,3 +116,11 @@ def test_get_acus_stops_asking_once_the_key_is_not_allowed():
         assert client.get_acus("s2") is None
     assert req.call_count == 1
     assert client.consumption_denied
+
+
+def test_a_missing_billing_record_keeps_other_sessions_billable():
+    """404 is per-session; only 401/403 mean the key cannot read consumption."""
+    client = make_client()
+    with patch("app.devin_client.requests.request", return_value=response(404)):
+        assert client.get_acus("s1") is None
+    assert not client.consumption_denied

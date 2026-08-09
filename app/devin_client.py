@@ -182,7 +182,8 @@ class DevinClient:
         try:
             data = self._request("GET", f"{CONSUMPTION_API_BASE}/{devin_id}")
         except DevinAPIError as exc:
-            if exc.status_code in (401, 403, 404):
+            # 404 is per-session (no billing record yet), not a key problem.
+            if exc.status_code in (401, 403):
                 self.consumption_denied = True
                 logger.warning(
                     "[devin] consumption unreadable (%s); ACUs fall back to the "
