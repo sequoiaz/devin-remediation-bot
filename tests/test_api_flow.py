@@ -1,10 +1,12 @@
 import hashlib
 import hmac
 import json
+from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
 from app.db import get_db
 from app.devin_client import DevinAPIError
+from app.main import _parse_ts, time_to_pr_seconds
 from tests.conftest import TARGET_REPO, WEBHOOK_SECRET
 
 
@@ -258,3 +260,17 @@ def test_metrics_empty(client):
     assert summary["success_rate_pct"] == 0.0
     assert summary["average_time_to_pr_seconds"] is None
     assert "No sessions yet." in client.get("/dashboard").text
+
+
+def test_time_to_pr_measures_when_the_pr_was_opened(env):
+    """Not when this bot noticed it, which also counts any downtime in between."""
+    db = get_db(env)
+    db.upsert_session(
+        issue_number=1, devin_session_id="s1", status="exit",
+        pr_url="https://github.com/o/r/pull/1",
+    )
+    row = db.get_session(1, "s1")
+    opened = _parse_ts(row["created_at"]) + timedelta(minutes=12)
+    # GitHub spells UTC `Z`, which fromisoformat rejects before Python 3.11.
+    db.record_pr(1, "s1", "open", opened.isoformat().replace("+00:00", "Z"))
+    assert time_to_pr_seconds(db.get_session(1, "s1")) == 12 * 60

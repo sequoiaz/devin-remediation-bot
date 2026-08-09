@@ -193,20 +193,22 @@ def poll_once(
 def refresh_pr_states(
     db: Database, github_client: GitHubClient
 ) -> List[Dict[str, Any]]:
-    """Keep the stored pull request state current after it is merged or closed.
+    """Keep what GitHub knows about each pull request current.
 
     A row whose session is done is never polled again, so its `pr_state` would stay
-    `open` forever; GitHub is the authority on what happened to the pull request.
+    `open` forever; GitHub is also the only source of when the pull request was
+    actually opened, which is what time-to-PR should measure.
     """
     errors: List[Dict[str, Any]] = []
     for row in db.list_sessions():
         pr_url = row.get("pr_url")
-        if not pr_url or row.get("pr_state") in SETTLED_PR_STATES:
+        settled = row.get("pr_state") in SETTLED_PR_STATES
+        if not pr_url or (settled and row.get("pr_created_at")):
             continue
         try:
-            state = github_client.get_pr_state(pr_url)
+            pr = github_client.get_pr(pr_url)
         except GitHubAPIError as exc:
-            logger.error("[poll] pr=%s state unavailable: %s", pr_url, exc)
+            logger.error("[poll] pr=%s unavailable: %s", pr_url, exc)
             errors.append(
                 {
                     "issue_number": row["issue_number"],
@@ -215,10 +217,18 @@ def refresh_pr_states(
                 }
             )
             continue
-        if state not in PR_STATES or state == row.get("pr_state"):
+        if not pr:
             continue
-        db.set_pr_state(row["issue_number"], row["devin_session_id"], state)
-        logger.info("[poll] pr=%s is now %s", pr_url, state)
+        state = pr.get("state") if pr.get("state") in PR_STATES else None
+        state = state if state != row.get("pr_state") else None
+        created_at = pr.get("created_at") if not row.get("pr_created_at") else None
+        if not isinstance(created_at, str):
+            created_at = None
+        if not state and not created_at:
+            continue
+        db.record_pr(row["issue_number"], row["devin_session_id"], state, created_at)
+        if state:
+            logger.info("[poll] pr=%s is now %s", pr_url, state)
     return errors
 
 

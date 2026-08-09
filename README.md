@@ -21,9 +21,11 @@ published after the agent declares itself finished still reaches the dashboard. 
 polls are recorded per row and reported through the `poll_errors` metric and the `/refresh`
 response instead of only reaching the log; the dashboard itself stays free of poll plumbing.
 
-Every cycle also asks GitHub for the state of any pull request that is still open, so the
-dashboard's **PR state** column follows the PR to `merged`/`closed` long after its session
-stopped being polled.
+Every cycle also asks GitHub about any pull request that is still open or whose opening
+time is unknown, so the dashboard's **PR state** column follows the PR to `merged`/`closed`
+long after its session stopped being polled, and **Time to PR** measures up to the moment
+GitHub says the pull request was opened rather than the moment this bot noticed it (which
+would count any downtime in between).
 
 ## Setup
 

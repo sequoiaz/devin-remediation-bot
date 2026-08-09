@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     status_detail TEXT,
     pr_url TEXT,
     pr_state TEXT,
+    pr_created_at TEXT,
     acus_consumed REAL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -52,6 +53,7 @@ NEW_COLUMNS = {
     "status_detail": "TEXT",
     "last_polled_at": "TEXT",
     "last_poll_error": "TEXT",
+    "pr_created_at": "TEXT",
 }
 
 
@@ -146,19 +148,24 @@ class Database:
             )
         return self.get_session(issue_number, devin_session_id)
 
-    def set_pr_state(
-        self, issue_number: int, devin_session_id: str, pr_state: str
+    def record_pr(
+        self,
+        issue_number: int,
+        devin_session_id: str,
+        pr_state: Optional[str] = None,
+        pr_created_at: Optional[str] = None,
     ) -> None:
-        """Update only the pull request state.
+        """Update only what GitHub knows about the pull request.
 
         `upsert_session` overwrites `status_detail` unconditionally, so a caller that
         knows nothing but the pull request cannot go through it.
         """
         with self.connect() as conn:
             conn.execute(
-                "UPDATE sessions SET pr_state = ?, updated_at = ? "
+                "UPDATE sessions SET pr_state = COALESCE(?, pr_state), "
+                "pr_created_at = COALESCE(?, pr_created_at), updated_at = ? "
                 "WHERE issue_number = ? AND devin_session_id = ?",
-                (pr_state, utcnow(), issue_number, devin_session_id),
+                (pr_state, pr_created_at, utcnow(), issue_number, devin_session_id),
             )
 
     def record_poll(

@@ -231,6 +231,9 @@ async def simulate(request: Request) -> Response:
 def _parse_ts(value: Optional[str]) -> Optional[datetime]:
     if not value:
         return None
+    # GitHub timestamps end in `Z`, which fromisoformat only accepts on 3.11+.
+    if value.endswith(("Z", "z")):
+        value = f"{value[:-1]}+00:00"
     try:
         return datetime.fromisoformat(value)
     except ValueError:
@@ -241,7 +244,13 @@ def time_to_pr_seconds(row: Dict[str, Any]) -> Optional[float]:
     if not row.get("pr_url"):
         return None
     start = _parse_ts(row.get("created_at"))
-    end = _parse_ts(row.get("completed_at")) or _parse_ts(row.get("updated_at"))
+    # When the pull request was actually opened, rather than when this bot happened
+    # to notice it, which also counts any downtime between the two.
+    end = (
+        _parse_ts(row.get("pr_created_at"))
+        or _parse_ts(row.get("completed_at"))
+        or _parse_ts(row.get("updated_at"))
+    )
     if not start or not end:
         return None
     return max((end - start).total_seconds(), 0.0)

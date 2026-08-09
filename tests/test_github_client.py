@@ -47,18 +47,26 @@ def test_dry_run_makes_no_network_call():
     assert issue["title"]
 
 
-def test_get_pr_state_reports_merged_separately_from_closed():
+def test_get_pr_reports_merged_separately_from_closed():
     client = GitHubClient(token="t")
+    opened = "2026-08-09T06:30:00Z"
     with patch.object(
-        client, "_request", return_value={"state": "closed", "merged": True}
+        client,
+        "_request",
+        return_value={"state": "closed", "merged": True, "created_at": opened},
     ):
-        assert client.get_pr_state("https://github.com/o/r/pull/7") == "merged"
+        assert client.get_pr("https://github.com/o/r/pull/7") == {
+            "state": "merged",
+            "created_at": opened,
+        }
     with patch.object(
-        client, "_request", return_value={"state": "closed", "merged": False}
+        client,
+        "_request",
+        return_value={"state": "closed", "merged": False, "created_at": opened},
     ):
-        assert client.get_pr_state("https://github.com/o/r/pull/7") == "closed"
+        assert client.get_pr("https://github.com/o/r/pull/7")["state"] == "closed"
 
 
-def test_get_pr_state_ignores_a_url_that_is_not_a_pull_request():
+def test_get_pr_ignores_a_url_that_is_not_a_pull_request():
     client = GitHubClient(token="t")
-    assert client.get_pr_state("https://example.com/whatever") is None
+    assert client.get_pr("https://example.com/whatever") is None
