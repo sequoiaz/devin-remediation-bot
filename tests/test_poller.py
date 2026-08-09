@@ -1,3 +1,4 @@
+import logging
 from unittest.mock import MagicMock
 
 from app.devin_client import DevinAPIError
@@ -167,6 +168,22 @@ def test_devin_error_leaves_row_untouched(database):
     devin.get_session.return_value = finished_session()
     poll_once(database, devin, github, REPO)
     assert database.get_session(42, "s1")["last_poll_error"] is None
+
+
+def test_unchanged_sessions_do_not_log_every_cycle(database, caplog):
+    """The poller runs every 20s; a static session should not narrate each pass."""
+    database.upsert_session(
+        issue_number=42, devin_session_id="s1", status="suspended",
+        status_detail="inactivity",
+    )
+    devin = MagicMock()
+    devin.get_session.return_value = {
+        "session_id": "s1", "status": "suspended", "status_detail": "inactivity",
+        "pull_requests": [], "acus_consumed": 0.0,
+    }
+    with caplog.at_level(logging.INFO, logger="app.poller"):
+        poll_once(database, devin, MagicMock(), REPO)
+    assert caplog.records == []
 
 
 def test_simulated_sessions_are_never_polled_against_the_api(database):

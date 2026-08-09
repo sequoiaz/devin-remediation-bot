@@ -90,7 +90,7 @@ def poll_once(
         )
         if session_id.startswith(DRY_RUN_SESSION_PREFIX) and not devin_client.dry_run:
             # Simulated session: the API never knew it, so polling only yields 403s.
-            logger.info(
+            logger.debug(
                 "[poll] session=%s issue=#%s is simulated, skipping",
                 session_id,
                 issue_number,
@@ -138,7 +138,10 @@ def poll_once(
         )
         db.record_poll(issue_number, session_id)
         updated += 1
-        logger.info(
+        # Every cycle re-reports the same state, so only transitions are worth a line.
+        changed = (new_status, new_detail) != (old_status, row.get("status_detail"))
+        logger.log(
+            logging.INFO if changed else logging.DEBUG,
             "[poll] session=%s issue=#%s status=%s -> %s (%s)",
             session_id,
             issue_number,
@@ -168,7 +171,7 @@ def poll_once(
                     exc,
                 )
 
-        if is_done(new_status, new_detail, pr_url):
+        if changed and is_done(new_status, new_detail, pr_url):
             logger.info(
                 "[poll] session=%s issue=#%s is done (status=%s detail=%s)",
                 session_id,
