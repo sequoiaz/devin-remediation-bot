@@ -127,8 +127,8 @@ class DevinClient:
             return {
                 "session_id": session_id,
                 "url": f"https://app.devin.ai/sessions/{session_id}",
-                "status": "running",
-                "status_enum": "running",
+                "status": "new",
+                "status_detail": None,
                 "pull_requests": [],
                 "acus_consumed": 0.0,
             }
@@ -140,13 +140,12 @@ class DevinClient:
             return {
                 "session_id": session_id,
                 "url": f"https://app.devin.ai/sessions/{session_id}",
-                "status": "finished",
-                "status_enum": "finished",
+                "status": "running",
+                "status_detail": "finished",
                 "pull_requests": [
                     {
-                        "url": f"https://github.com/{self.target_repo}/pull/{pr_number}",
-                        "state": "open",
-                        "number": pr_number,
+                        "pr_url": f"https://github.com/{self.target_repo}/pull/{pr_number}",
+                        "pr_state": "open",
                     }
                 ],
                 "acus_consumed": round(random.uniform(1.5, 9.5), 2),
