@@ -15,7 +15,7 @@ from app.config import get_settings
 from app.db import STALLED_DETAILS, Database, get_db, is_done
 from app.devin_client import DevinAPIError, DevinClient
 from app.github_client import GitHubAPIError, GitHubClient
-from app.poller import extract_pr, poller_loop
+from app.poller import extract_pr, poll_once, poller_loop
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
@@ -76,7 +76,7 @@ def create_remediation_session(issue: Dict[str, Any]) -> Dict[str, Any]:
         raise
 
     session_id = session.get("session_id")
-    pr = extract_pr(session)
+    pr = extract_pr(session, settings.target_repo)
     row = db.upsert_session(
         issue_number=issue_number,
         devin_session_id=session_id,
@@ -164,6 +164,20 @@ async def github_webhook(
     return JSONResponse({"status": "accepted", "issue_number": issue.get("number")})
 
 
+@app.post("/refresh")
+async def refresh() -> Dict[str, Any]:
+    """Poll every in-flight session immediately instead of waiting for the loop."""
+    settings = get_settings()
+    updated = await asyncio.to_thread(
+        poll_once,
+        get_database(),
+        get_devin_client(),
+        get_github_client(),
+        settings.target_repo,
+    )
+    return {"status": "ok", "sessions_refreshed": updated}
+
+
 @app.post("/simulate")
 async def simulate(request: Request) -> Response:
     settings = get_settings()
@@ -248,6 +262,7 @@ def build_metrics() -> Dict[str, Any]:
     ttp_values: List[float] = []
     completed_with_pr = 0
     failed_or_blocked = 0
+    poll_errors = 0
     total_acus = 0.0
 
     for row in rows:
@@ -260,9 +275,15 @@ def build_metrics() -> Dict[str, Any]:
             completed_with_pr += 1
         elif status in ("error", "suspended") or detail in STALLED_DETAILS:
             failed_or_blocked += 1
+        if row.get("last_poll_error"):
+            poll_errors += 1
         total_acus += float(row.get("acus_consumed") or 0)
         sessions.append(
-            {**row, "time_to_pr_seconds": ttp, "is_done": is_done(status, detail)}
+            {
+                **row,
+                "time_to_pr_seconds": ttp,
+                "is_done": is_done(status, detail, row.get("pr_url")),
+            }
         )
 
     total = len(rows)
@@ -271,6 +292,7 @@ def build_metrics() -> Dict[str, Any]:
             "total_triggered": total,
             "completed_with_pr": completed_with_pr,
             "failed_or_blocked": failed_or_blocked,
+            "poll_errors": poll_errors,
             "success_rate_pct": round(completed_with_pr / total * 100, 1) if total else 0.0,
             "average_time_to_pr_seconds": (
                 round(sum(ttp_values) / len(ttp_values), 1) if ttp_values else None
@@ -298,6 +320,7 @@ async def dashboard() -> HTMLResponse:
             ("Total triggered", summary["total_triggered"]),
             ("Completed with PR", summary["completed_with_pr"]),
             ("Failed / blocked", summary["failed_or_blocked"]),
+            ("Poll errors", summary["poll_errors"]),
             ("Success rate", f"{summary['success_rate_pct']}%"),
             ("Avg time to PR", format_duration(summary["average_time_to_pr_seconds"])),
             ("Total ACUs", summary["total_acus_consumed"]),
@@ -315,6 +338,12 @@ async def dashboard() -> HTMLResponse:
         session_cell = (
             f'<a href="{html.escape(session_url)}">session</a>' if session_url else "-"
         )
+        poll_error = session.get("last_poll_error")
+        poll_cell = (
+            f'<span class="error">{html.escape(str(poll_error))}</span>'
+            if poll_error
+            else html.escape(str(session.get("last_polled_at") or "-"))
+        )
         rows_html.append(
             "<tr>"
             f"<td>#{html.escape(str(session.get('issue_number')))}</td>"
@@ -325,6 +354,7 @@ async def dashboard() -> HTMLResponse:
             f"<td>{html.escape(str(session.get('created_at') or '-'))}</td>"
             f"<td>{html.escape(str(session.get('updated_at') or '-'))}</td>"
             f"<td>{html.escape(format_duration(session.get('time_to_pr_seconds')))}</td>"
+            f"<td>{poll_cell}</td>"
             f"<td>{session_cell}</td>"
             "</tr>"
         )
@@ -344,6 +374,7 @@ h1 {{ font-size: 1.5rem; }}
 table {{ border-collapse: collapse; width: 100%; }}
 th, td {{ border-bottom: 1px solid #eee; padding: 0.5rem 0.75rem; text-align: left; font-size: 0.9rem; }}
 th {{ background: #fafafa; }}
+.error {{ color: #b3261e; }}
 </style>
 </head>
 <body>
@@ -352,9 +383,9 @@ th {{ background: #fafafa; }}
 <table>
 <thead><tr>
 <th>Issue</th><th>Title</th><th>Status</th><th>PR</th><th>ACUs</th>
-<th>Created</th><th>Updated</th><th>Time to PR</th><th>Devin</th>
+<th>Created</th><th>Updated</th><th>Time to PR</th><th>Last poll</th><th>Devin</th>
 </tr></thead>
-<tbody>{''.join(rows_html) or '<tr><td colspan="9">No sessions yet.</td></tr>'}</tbody>
+<tbody>{''.join(rows_html) or '<tr><td colspan="10">No sessions yet.</td></tr>'}</tbody>
 </table>
 </body>
 </html>"""

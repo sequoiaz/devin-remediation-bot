@@ -31,10 +31,33 @@ def test_finished_detail_completes_a_still_running_session(database):
     database.upsert_session(issue_number=42, devin_session_id="a", status="running")
     assert database.get_active_session_for_issue(42) is not None
     database.upsert_session(
-        issue_number=42, devin_session_id="a", status="running", status_detail="finished"
+        issue_number=42,
+        devin_session_id="a",
+        status="running",
+        status_detail="finished",
+        pr_url="https://github.com/o/r/pull/1",
     )
     assert database.get_active_session_for_issue(42) is None
     assert database.get_session(42, "a")["completed_at"]
+
+
+def test_finished_detail_without_a_pr_keeps_being_polled(database):
+    """A session can report `finished` before its pull request is published."""
+    database.upsert_session(
+        issue_number=42, devin_session_id="a", status="running", status_detail="finished"
+    )
+    assert [row["devin_session_id"] for row in database.list_non_terminal_sessions()] == ["a"]
+    assert database.get_session(42, "a")["completed_at"] is None
+
+
+def test_record_poll_stores_and_clears_the_error(database):
+    database.upsert_session(issue_number=42, devin_session_id="a", status="running")
+    database.record_poll(42, "a", error="HTTP 401")
+    row = database.get_session(42, "a")
+    assert row["last_poll_error"] == "HTTP 401"
+    assert row["last_polled_at"]
+    database.record_poll(42, "a")
+    assert database.get_session(42, "a")["last_poll_error"] is None
 
 
 def test_suspended_session_is_not_treated_as_done(database):
@@ -87,6 +110,8 @@ def test_legacy_database_gains_status_detail_column(tmp_path):
         )
 
     db = Database(path)
-    assert db.get_session(7, "old")["status_detail"] is None
+    row = db.get_session(7, "old")
+    assert row["status_detail"] is None
+    assert row["last_poll_error"] is None
     db.upsert_session(issue_number=7, devin_session_id="old", status="exit")
     assert db.get_session(7, "old")["completed_at"]
