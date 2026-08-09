@@ -232,6 +232,13 @@ def test_forced_poll_does_not_stick_an_error_on_a_done_row(database):
 
 
 PR = "https://github.com/fake-org/fake-repo/pull/9"
+PR_OPENED_AT = "2026-08-09T06:30:00+00:00"
+
+
+def github_with_pr(state="open", created_at=PR_OPENED_AT):
+    github = MagicMock()
+    github.get_pr.return_value = {"state": state, "created_at": created_at}
+    return github
 
 
 def test_pr_state_is_refreshed_after_the_pull_request_is_merged(database):
@@ -240,11 +247,11 @@ def test_pr_state_is_refreshed_after_the_pull_request_is_merged(database):
         issue_number=42, devin_session_id="s1", status="exit", pr_url=PR,
         pr_state="open",
     )
-    github = MagicMock()
-    github.get_pr_state.return_value = "merged"
+    github = github_with_pr("merged")
     poll_once(database, MagicMock(), github, REPO)
-    github.get_pr_state.assert_called_once_with(PR)
-    assert database.get_session(42, "s1")["pr_state"] == "merged"
+    github.get_pr.assert_called_once_with(PR)
+    row = database.get_session(42, "s1")
+    assert (row["pr_state"], row["pr_created_at"]) == ("merged", PR_OPENED_AT)
 
 
 def test_a_settled_pr_is_not_queried_again(database):
@@ -252,9 +259,10 @@ def test_a_settled_pr_is_not_queried_again(database):
         issue_number=42, devin_session_id="s1", status="exit", pr_url=PR,
         pr_state="merged",
     )
+    database.record_pr(42, "s1", pr_created_at=PR_OPENED_AT)
     github = MagicMock()
     poll_once(database, MagicMock(), github, REPO)
-    github.get_pr_state.assert_not_called()
+    github.get_pr.assert_not_called()
 
 
 def test_an_unreadable_pr_state_is_reported_and_leaves_the_row_alone(database):
@@ -263,7 +271,7 @@ def test_an_unreadable_pr_state_is_reported_and_leaves_the_row_alone(database):
         pr_state="open",
     )
     github = MagicMock()
-    github.get_pr_state.side_effect = GitHubAPIError("HTTP 404")
+    github.get_pr.side_effect = GitHubAPIError("HTTP 404")
     report = poll_once(database, MagicMock(), github, REPO)
     assert report.errors == [
         {"issue_number": 42, "devin_session_id": "s1", "error": "HTTP 404"}
@@ -279,9 +287,7 @@ def test_refreshing_the_pr_state_keeps_the_row_done(database):
     )
     devin = MagicMock()
     devin.get_session.return_value = finished_session()
-    github = MagicMock()
-    github.get_pr_state.return_value = "merged"
-    poll_once(database, devin, github, REPO)
+    poll_once(database, devin, github_with_pr("merged"), REPO)
 
     row = database.get_session(42, "s1")
     assert (row["status_detail"], row["pr_state"]) == ("finished", "merged")

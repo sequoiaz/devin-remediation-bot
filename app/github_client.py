@@ -5,6 +5,8 @@ from typing import Any, Dict, Optional
 
 import requests
 
+from app.db import utcnow
+
 logger = logging.getLogger(__name__)
 
 GITHUB_API_BASE = "https://api.github.com"
@@ -91,22 +93,26 @@ class GitHubClient:
             "GET", f"{GITHUB_API_BASE}/repos/{repo}/issues/{issue_number}"
         )
 
-    def get_pr_state(self, pr_url: str) -> Optional[str]:
-        """`open`, `closed` or `merged` for a pull request URL, or None if unparseable.
+    def get_pr(self, pr_url: str) -> Optional[Dict[str, Any]]:
+        """`{state, created_at}` for a pull request URL, or None if unparseable.
 
-        A merged pull request is `closed` with `merged: true` in the REST API, but
-        the distinction is the interesting one on the dashboard.
+        A merged pull request is `closed` with `merged: true` in the REST API; the
+        distinction is the interesting one on the dashboard, so it collapses to a
+        single `state` of `open`, `closed` or `merged`.
         """
         match = PR_URL_PATTERN.search(pr_url)
         if not match:
             return None
         if self.dry_run:
-            return "open"
+            return {"state": "open", "created_at": utcnow()}
         pr = self._request(
             "GET",
             f"{GITHUB_API_BASE}/repos/{match['repo']}/pulls/{match['number']}",
         )
-        return "merged" if pr.get("merged") else pr.get("state")
+        return {
+            "state": "merged" if pr.get("merged") else pr.get("state"),
+            "created_at": pr.get("created_at"),
+        }
 
     def post_comment(self, repo: str, issue_number: int, body: str) -> Dict[str, Any]:
         if self.dry_run:
