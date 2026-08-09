@@ -10,6 +10,10 @@ logger = logging.getLogger(__name__)
 
 DEVIN_API_BASE = "https://api.devin.ai/v3/organizations"
 
+# Consumption is billed and reported separately from the session itself, under the
+# enterprise scope rather than the organization one.
+CONSUMPTION_API_BASE = "https://api.devin.ai/v3/enterprise/consumption/daily/sessions"
+
 # Sessions minted by DRY_RUN do not exist in the API; the prefix identifies them
 # once the bot is restarted with DRY_RUN off.
 DRY_RUN_SESSION_PREFIX = "devin-dryrun-"
@@ -26,6 +30,10 @@ STRUCTURED_OUTPUT_SCHEMA = {
 
 class DevinAPIError(Exception):
     """Raised when the Devin API cannot be reached or returns a failing status."""
+
+    def __init__(self, message: str, status_code: Optional[int] = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class DevinClient:
@@ -44,6 +52,9 @@ class DevinClient:
         self.dry_run = dry_run
         self.max_attempts = max_attempts
         self.backoff_base = backoff_base
+        # Reading consumption needs a key with `ManageBilling`; without one there is
+        # no point asking again on every poll cycle.
+        self.consumption_denied = False
 
     @property
     def base_url(self) -> str:
@@ -75,7 +86,8 @@ class DevinClient:
                 elif response.status_code >= 400:
                     raise DevinAPIError(
                         f"Devin API {method} {url} failed with HTTP "
-                        f"{response.status_code}: {response.text[:300]}"
+                        f"{response.status_code}: {response.text[:300]}",
+                        status_code=response.status_code,
                     )
                 else:
                     return response.json()
@@ -155,3 +167,31 @@ class DevinClient:
                 "acus_consumed": round(random.uniform(1.5, 9.5), 2),
             }
         return self._request("GET", f"{self.base_url}/sessions/{session_id}")
+
+    def get_acus(self, session_id: str) -> Optional[float]:
+        """ACUs billed to a session, or None when consumption cannot be read.
+
+        The session payload reports `acus_consumed: 0.0` even for sessions that did
+        real work, so the consumption API is the number that matches billing.
+        """
+        if self.dry_run or self.consumption_denied or not session_id:
+            return None
+        devin_id = (
+            session_id if session_id.startswith("devin-") else f"devin-{session_id}"
+        )
+        try:
+            data = self._request("GET", f"{CONSUMPTION_API_BASE}/{devin_id}")
+        except DevinAPIError as exc:
+            # 404 is per-session (no billing record yet), not a key problem.
+            if exc.status_code in (401, 403):
+                self.consumption_denied = True
+                logger.warning(
+                    "[devin] consumption unreadable (%s); ACUs fall back to the "
+                    "session payload",
+                    exc,
+                )
+            else:
+                logger.warning("[devin] consumption for %s failed: %s", devin_id, exc)
+            return None
+        total = data.get("total_acus")
+        return float(total) if isinstance(total, (int, float)) else None

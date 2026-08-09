@@ -27,6 +27,12 @@ long after its session stopped being polled, and **Time to PR** measures up to t
 GitHub says the pull request was opened rather than the moment this bot noticed it (which
 would count any downtime in between).
 
+ACUs come from the consumption API (`/v3/enterprise/consumption/daily/sessions/{id}`) summed
+over the session and any children it delegated to, because a session payload reports
+`acus_consumed: 0.0` even for work that was billed, and a delegating parent is billed
+nothing. That endpoint needs a key with `ManageBilling`; without one the bot logs once and
+falls back to the session payload's figure.
+
 ## Setup
 
 ```bash

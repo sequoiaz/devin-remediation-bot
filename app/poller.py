@@ -44,30 +44,57 @@ def extract_pr(
     return prs[0]
 
 
-def resolve_pr(
-    devin_client: DevinClient,
-    session: Dict[str, Any],
-    target_repo: Optional[str] = None,
-    max_depth: int = 2,
-) -> Optional[Dict[str, Any]]:
-    """Pull request of a session, or of a descendant it delegated the work to.
+def session_tree(
+    devin_client: DevinClient, session: Dict[str, Any], max_depth: int = 2
+) -> List[Dict[str, Any]]:
+    """A session followed by the descendants it delegated work to, parent first.
 
-    A session that spawns children keeps an empty `pull_requests` of its own, so
-    the PR has to be looked up on `child_session_ids`.
+    A session that spawns children keeps an empty `pull_requests` and no ACUs of
+    its own, so both have to be looked up on `child_session_ids`.
     """
-    pr = extract_pr(session, target_repo)
-    if pr or max_depth <= 0:
-        return pr
+    sessions = [session]
+    if max_depth <= 0:
+        return sessions
     for child_id in session.get("child_session_ids") or []:
         try:
             child = devin_client.get_session(child_id)
         except DevinAPIError as exc:
             logger.warning("[poll] child session=%s unreadable: %s", child_id, exc)
             continue
-        pr = resolve_pr(devin_client, child, target_repo, max_depth - 1)
+        sessions.extend(session_tree(devin_client, child, max_depth - 1))
+    return sessions
+
+
+def resolve_pr(
+    sessions: List[Dict[str, Any]], target_repo: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
+    """The first pull request in a session tree, the parent's own winning."""
+    for session in sessions:
+        pr = extract_pr(session, target_repo)
         if pr:
             return pr
     return None
+
+
+def resolve_acus(
+    devin_client: DevinClient, sessions: List[Dict[str, Any]]
+) -> Optional[float]:
+    """ACUs billed across a session tree, or None when nothing could be read.
+
+    A session payload reports `acus_consumed: 0.0` even when it did real work, and
+    a parent that delegates is billed nothing, so consumption is asked for per
+    session and the payload is only a fallback. A tree that yields nothing but
+    zeroes is reported as unknown rather than free, so a cycle where consumption is
+    unreachable cannot overwrite a figure an earlier cycle got right.
+    """
+    total: Optional[float] = None
+    for session in sessions:
+        billed = devin_client.get_acus(session.get("session_id") or "")
+        if not isinstance(billed, (int, float)):
+            billed = session.get("acus_consumed")
+        if isinstance(billed, (int, float)) and billed:
+            total = (total or 0.0) + float(billed)
+    return total
 
 
 def poll_once(
@@ -125,7 +152,8 @@ def poll_once(
         old_status = row.get("status")
         new_status = session.get("status")
         new_detail = session.get("status_detail")
-        pr = resolve_pr(devin_client, session, target_repo)
+        tree = session_tree(devin_client, session)
+        pr = resolve_pr(tree, target_repo)
         pr_url = pr["url"] if pr else None
         had_pr = bool(row.get("pr_url"))
         # A session keeps reporting the pull request as open after it is merged, so
@@ -141,7 +169,7 @@ def poll_once(
             status_detail=new_detail,
             pr_url=pr_url,
             pr_state=pr_state,
-            acus_consumed=session.get("acus_consumed"),
+            acus_consumed=resolve_acus(devin_client, tree),
         )
         db.record_poll(issue_number, session_id)
         updated += 1
