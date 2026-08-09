@@ -12,10 +12,10 @@ from fastapi import BackgroundTasks, FastAPI, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from app.config import get_settings
-from app.db import Database, get_db
+from app.db import STALLED_DETAILS, Database, get_db, is_done
 from app.devin_client import DevinAPIError, DevinClient
 from app.github_client import GitHubAPIError, GitHubClient
-from app.poller import poller_loop
+from app.poller import extract_pr, poller_loop
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
@@ -75,18 +75,17 @@ def create_remediation_session(issue: Dict[str, Any]) -> Dict[str, Any]:
         logger.error("[remediate] issue=#%s failed to create session: %s", issue_number, exc)
         raise
 
-    session_id = session.get("session_id") or session.get("id")
-    pull_requests = session.get("pull_requests") or []
-    pr = pull_requests[0] if pull_requests else None
+    session_id = session.get("session_id")
+    pr = extract_pr(session)
     row = db.upsert_session(
         issue_number=issue_number,
         devin_session_id=session_id,
         issue_title=issue.get("title"),
         devin_session_url=session.get("url"),
-        status=session.get("status", "running"),
-        status_enum=session.get("status_enum", "running"),
-        pr_url=(pr.get("url") if isinstance(pr, dict) else pr) if pr else None,
-        pr_state=(pr.get("state") if isinstance(pr, dict) else None) if pr else None,
+        status=session.get("status", "new"),
+        status_detail=session.get("status_detail"),
+        pr_url=pr["url"] if pr else None,
+        pr_state=pr["state"] if pr else None,
         acus_consumed=session.get("acus_consumed", 0.0),
     )
     logger.info(
@@ -224,6 +223,13 @@ def time_to_pr_seconds(row: Dict[str, Any]) -> Optional[float]:
     return max((end - start).total_seconds(), 0.0)
 
 
+def format_status(row: Dict[str, Any]) -> str:
+    """`status`, qualified by `status_detail` when it adds information."""
+    status = row.get("status") or "-"
+    detail = row.get("status_detail")
+    return f"{status} ({detail})" if detail else status
+
+
 def format_duration(seconds: Optional[float]) -> str:
     if seconds is None:
         return "-"
@@ -248,13 +254,16 @@ def build_metrics() -> Dict[str, Any]:
         ttp = time_to_pr_seconds(row)
         if ttp is not None:
             ttp_values.append(ttp)
-        status = (row.get("status_enum") or row.get("status") or "").lower()
+        status = (row.get("status") or "").lower()
+        detail = (row.get("status_detail") or "").lower()
         if row.get("pr_url"):
             completed_with_pr += 1
-        elif status in ("blocked", "expired", "stopped", "failed"):
+        elif status in ("error", "suspended") or detail in STALLED_DETAILS:
             failed_or_blocked += 1
         total_acus += float(row.get("acus_consumed") or 0)
-        sessions.append({**row, "time_to_pr_seconds": ttp})
+        sessions.append(
+            {**row, "time_to_pr_seconds": ttp, "is_done": is_done(status, detail)}
+        )
 
     total = len(rows)
     return {
@@ -302,7 +311,7 @@ async def dashboard() -> HTMLResponse:
             f'<a href="{html.escape(pr_url)}">{html.escape(pr_url)}</a>' if pr_url else "-"
         )
         session_url = session.get("devin_session_url")
-        status = session.get("status_enum") or session.get("status") or "-"
+        status = format_status(session)
         session_cell = (
             f'<a href="{html.escape(session_url)}">session</a>' if session_url else "-"
         )

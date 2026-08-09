@@ -15,8 +15,8 @@ def fake_created_session(session_id="sess-1"):
     return {
         "session_id": session_id,
         "url": f"https://app.devin.ai/sessions/{session_id}",
-        "status": "running",
-        "status_enum": "running",
+        "status": "new",
+        "status_detail": None,
         "pull_requests": [],
         "acus_consumed": 0.0,
     }
@@ -98,7 +98,7 @@ def test_new_session_created_once_previous_one_is_terminal(client, env, sample_i
     db = get_db(env)
     db.upsert_session(
         issue_number=sample_issue["number"], devin_session_id="old",
-        status="finished", status_enum="finished",
+        status="exit",
     )
     devin = MagicMock()
     devin.create_session.return_value = fake_created_session("sess-new")
@@ -154,13 +154,13 @@ def test_metrics_and_dashboard_shape(client, env):
     db.upsert_session(
         issue_number=1, devin_session_id="s1", issue_title="Fix the parser",
         devin_session_url="https://app.devin.ai/sessions/s1",
-        status="finished", status_enum="finished",
+        status="running", status_detail="finished",
         pr_url="https://github.com/fake-org/fake-repo/pull/9", pr_state="open",
         acus_consumed=3.5,
     )
     db.upsert_session(
         issue_number=2, devin_session_id="s2", issue_title="Blocked one",
-        status="blocked", status_enum="blocked", acus_consumed=1.5,
+        status="running", status_detail="waiting_for_user", acus_consumed=1.5,
     )
 
     payload = client.get("/metrics").json()
@@ -182,6 +182,8 @@ def test_metrics_and_dashboard_shape(client, env):
     assert "Success rate" in html
     assert "50.0%" in html
     assert "3.5" in html
+    # `status_detail` qualifies the bare lifecycle status in the Status column.
+    assert "running (waiting_for_user)" in html
 
 
 def test_metrics_empty(client):

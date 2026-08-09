@@ -2,7 +2,7 @@ import asyncio
 import logging
 from typing import Any, Dict, Optional
 
-from app.db import TERMINAL_STATUSES, Database
+from app.db import Database, is_done
 from app.devin_client import DevinAPIError, DevinClient
 from app.github_client import GitHubAPIError, GitHubClient
 
@@ -10,13 +10,14 @@ logger = logging.getLogger(__name__)
 
 
 def extract_pr(session: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """First pull request of a v3 session, whose entries are `{pr_url, pr_state}`."""
     pull_requests = session.get("pull_requests") or []
     if not pull_requests:
         return None
     first = pull_requests[0]
     if isinstance(first, str):
         return {"url": first, "state": None}
-    return {"url": first.get("url"), "state": first.get("state")}
+    return {"url": first.get("pr_url"), "state": first.get("pr_state")}
 
 
 def poll_once(
@@ -41,8 +42,9 @@ def poll_once(
             )
             continue
 
-        old_status = row.get("status_enum") or row.get("status")
-        new_status = session.get("status_enum") or session.get("status")
+        old_status = row.get("status")
+        new_status = session.get("status")
+        new_detail = session.get("status_detail")
         pr = extract_pr(session)
         pr_url = pr["url"] if pr else None
         had_pr = bool(row.get("pr_url"))
@@ -51,19 +53,20 @@ def poll_once(
             issue_number=issue_number,
             devin_session_id=session_id,
             devin_session_url=session.get("url"),
-            status=session.get("status"),
-            status_enum=session.get("status_enum"),
+            status=new_status,
+            status_detail=new_detail,
             pr_url=pr_url,
             pr_state=pr["state"] if pr else None,
             acus_consumed=session.get("acus_consumed"),
         )
         updated += 1
         logger.info(
-            "[poll] session=%s issue=#%s status=%s -> %s",
+            "[poll] session=%s issue=#%s status=%s -> %s (%s)",
             session_id,
             issue_number,
             old_status,
             new_status,
+            new_detail or "-",
         )
 
         if pr_url and not had_pr:
@@ -87,12 +90,13 @@ def poll_once(
                     exc,
                 )
 
-        if new_status in TERMINAL_STATUSES:
+        if is_done(new_status, new_detail):
             logger.info(
-                "[poll] session=%s issue=#%s reached terminal status %s",
+                "[poll] session=%s issue=#%s is done (status=%s detail=%s)",
                 session_id,
                 issue_number,
                 new_status,
+                new_detail or "-",
             )
     return updated
 

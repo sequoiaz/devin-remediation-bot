@@ -87,6 +87,9 @@ def test_dry_run_makes_no_network_call(sample_issue):
         fetched = client.get_session(created["session_id"])
     req.assert_not_called()
     assert created["session_id"].startswith("devin-dryrun-")
-    assert fetched["status"] == "finished"
-    assert fetched["pull_requests"][0]["url"].startswith("https://github.com/fake-org/fake-repo/pull/")
+    assert fetched["status"] == "running"
+    assert fetched["status_detail"] == "finished"
+    assert fetched["pull_requests"][0]["pr_url"].startswith(
+        "https://github.com/fake-org/fake-repo/pull/"
+    )
     assert fetched["acus_consumed"] > 0

@@ -3,7 +3,16 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-TERMINAL_STATUSES = {"finished", "blocked", "expired", "stopped", "failed"}
+# Devin v3 `status` values: new, claimed, running, exit, error, suspended, resuming.
+# Only `exit` and `error` end the session lifecycle; `suspended` can still resume.
+TERMINAL_STATUSES = {"exit", "error"}
+
+# A session reports `status_detail == "finished"` while `status` is still `running`
+# once the agent considers the task complete, which is what the dashboard cares about.
+FINISHED_DETAIL = "finished"
+
+# `status_detail` values that mean the session cannot make progress on its own.
+STALLED_DETAILS = {"waiting_for_user", "waiting_for_approval"}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -13,7 +22,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     devin_session_id TEXT NOT NULL,
     devin_session_url TEXT,
     status TEXT,
-    status_enum TEXT,
+    status_detail TEXT,
     pr_url TEXT,
     pr_state TEXT,
     acus_consumed REAL DEFAULT 0,
@@ -24,9 +33,19 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 """
 
+# Rows that are done: the lifecycle ended, or the agent reported the task finished.
+DONE_PREDICATE = (
+    "(COALESCE(status, '') IN ({terminal}) OR COALESCE(status_detail, '') = ?)"
+).format(terminal=", ".join("?" for _ in TERMINAL_STATUSES))
+DONE_PARAMS = (*TERMINAL_STATUSES, FINISHED_DETAIL)
+
 
 def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def is_done(status: Optional[str], status_detail: Optional[str] = None) -> bool:
+    return (status or "") in TERMINAL_STATUSES or (status_detail or "") == FINISHED_DETAIL
 
 
 class Database:
@@ -45,6 +64,13 @@ class Database:
     def init_db(self) -> None:
         with self.connect() as conn:
             conn.executescript(SCHEMA)
+            columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(sessions)")
+            }
+            # Databases created before the v3 field names were fixed have the
+            # invented `status_enum` column instead of `status_detail`.
+            if "status_detail" not in columns:
+                conn.execute("ALTER TABLE sessions ADD COLUMN status_detail TEXT")
 
     def upsert_session(
         self,
@@ -53,7 +79,7 @@ class Database:
         issue_title: Optional[str] = None,
         devin_session_url: Optional[str] = None,
         status: Optional[str] = None,
-        status_enum: Optional[str] = None,
+        status_detail: Optional[str] = None,
         pr_url: Optional[str] = None,
         pr_state: Optional[str] = None,
         acus_consumed: Optional[float] = None,
@@ -61,20 +87,20 @@ class Database:
         """Insert a session row, or update it in place when the
         (issue_number, devin_session_id) pair already exists."""
         now = utcnow()
-        completed_at = now if (status_enum or status) in TERMINAL_STATUSES else None
+        completed_at = now if is_done(status, status_detail) else None
         with self.connect() as conn:
             conn.execute(
                 """
                 INSERT INTO sessions (
                     issue_number, issue_title, devin_session_id, devin_session_url,
-                    status, status_enum, pr_url, pr_state, acus_consumed,
+                    status, status_detail, pr_url, pr_state, acus_consumed,
                     created_at, updated_at, completed_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (issue_number, devin_session_id) DO UPDATE SET
                     issue_title = COALESCE(excluded.issue_title, sessions.issue_title),
                     devin_session_url = COALESCE(excluded.devin_session_url, sessions.devin_session_url),
                     status = COALESCE(excluded.status, sessions.status),
-                    status_enum = COALESCE(excluded.status_enum, sessions.status_enum),
+                    status_detail = excluded.status_detail,
                     pr_url = COALESCE(excluded.pr_url, sessions.pr_url),
                     pr_state = COALESCE(excluded.pr_state, sessions.pr_state),
                     acus_consumed = COALESCE(excluded.acus_consumed, sessions.acus_consumed),
@@ -87,7 +113,7 @@ class Database:
                     devin_session_id,
                     devin_session_url,
                     status,
-                    status_enum,
+                    status_detail,
                     pr_url,
                     pr_state,
                     acus_consumed,
@@ -114,25 +140,19 @@ class Database:
         return [dict(row) for row in rows]
 
     def get_active_session_for_issue(self, issue_number: int) -> Optional[Dict[str, Any]]:
-        """Most recent non-terminal session for an issue, if one is already running."""
-        placeholders = ", ".join("?" for _ in TERMINAL_STATUSES)
+        """Most recent still-in-flight session for an issue, if one exists."""
         query = (
-            "SELECT * FROM sessions WHERE issue_number = ? "
-            f"AND COALESCE(status_enum, status, '') NOT IN ({placeholders}) "
+            f"SELECT * FROM sessions WHERE issue_number = ? AND NOT {DONE_PREDICATE} "
             "ORDER BY datetime(created_at) DESC, id DESC LIMIT 1"
         )
         with self.connect() as conn:
-            row = conn.execute(query, (issue_number, *TERMINAL_STATUSES)).fetchone()
+            row = conn.execute(query, (issue_number, *DONE_PARAMS)).fetchone()
         return dict(row) if row else None
 
     def list_non_terminal_sessions(self) -> List[Dict[str, Any]]:
-        placeholders = ", ".join("?" for _ in TERMINAL_STATUSES)
-        query = (
-            "SELECT * FROM sessions WHERE COALESCE(status_enum, status, '') "
-            f"NOT IN ({placeholders})"
-        )
+        query = f"SELECT * FROM sessions WHERE NOT {DONE_PREDICATE}"
         with self.connect() as conn:
-            rows = conn.execute(query, tuple(TERMINAL_STATUSES)).fetchall()
+            rows = conn.execute(query, DONE_PARAMS).fetchall()
         return [dict(row) for row in rows]
 
 
