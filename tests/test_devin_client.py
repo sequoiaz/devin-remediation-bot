@@ -140,3 +140,14 @@ def test_a_missing_billing_record_keeps_other_sessions_billable():
     with patch("app.devin_client.requests.request", return_value=response(404)):
         assert client.get_acus("s1") is None
     assert not client.consumption_denied
+
+
+def test_one_scope_refusing_is_enough_to_stop_asking():
+    """The other answering 404 does not make the key any more allowed."""
+    client = make_client()
+    with patch(
+        "app.devin_client.requests.request",
+        side_effect=[response(404), response(403)],
+    ):
+        assert client.get_acus("s1") is None
+    assert client.consumption_denied

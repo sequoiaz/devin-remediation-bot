@@ -204,10 +204,12 @@ class DevinClient:
             total = data.get("total_acus")
             return float(total) if isinstance(total, (int, float)) else None
 
-        if denied == len(urls):
+        if denied:
+            # No scope produced a number and at least one refused the key, which no
+            # later cycle will change.
             self.consumption_denied = True
             logger.warning(
-                "[devin] this key may read neither consumption scope; ACUs fall "
-                "back to the session payload"
+                "[devin] consumption is not readable with this key; ACUs fall back "
+                "to the session payload"
             )
         return None
