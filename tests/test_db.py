@@ -115,3 +115,14 @@ def test_legacy_database_gains_status_detail_column(tmp_path):
     assert row["last_poll_error"] is None
     db.upsert_session(issue_number=7, devin_session_id="old", status="exit")
     assert db.get_session(7, "old")["completed_at"]
+
+
+def test_set_pr_state_touches_nothing_else(database):
+    database.upsert_session(
+        issue_number=1, devin_session_id="s1", status="running",
+        status_detail="finished", pr_url="https://github.com/o/r/pull/1",
+        pr_state="open",
+    )
+    database.set_pr_state(1, "s1", "merged")
+    row = database.get_session(1, "s1")
+    assert (row["pr_state"], row["status_detail"]) == ("merged", "finished")

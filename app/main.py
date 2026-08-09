@@ -353,6 +353,7 @@ async def dashboard() -> HTMLResponse:
             f"<td>{html.escape(str(session.get('issue_title') or '-'))}</td>"
             f"<td>{html.escape(str(status))}</td>"
             f"<td>{pr_cell}</td>"
+            f"<td>{html.escape(str(session.get('pr_state') or '-'))}</td>"
             f"<td>{float(session.get('acus_consumed') or 0):.2f}</td>"
             f"<td>{html.escape(str(session.get('created_at') or '-'))}</td>"
             f"<td>{html.escape(str(session.get('updated_at') or '-'))}</td>"
@@ -383,10 +384,10 @@ th {{ background: #fafafa; }}
 <div class="cards">{cards}</div>
 <table>
 <thead><tr>
-<th>Issue</th><th>Title</th><th>Status</th><th>PR</th><th>ACUs</th>
+<th>Issue</th><th>Title</th><th>Status</th><th>PR</th><th>PR state</th><th>ACUs</th>
 <th>Created</th><th>Updated</th><th>Time to PR</th><th>Devin</th>
 </tr></thead>
-<tbody>{''.join(rows_html) or '<tr><td colspan="9">No sessions yet.</td></tr>'}</tbody>
+<tbody>{''.join(rows_html) or '<tr><td colspan="10">No sessions yet.</td></tr>'}</tbody>
 </table>
 </body>
 </html>"""

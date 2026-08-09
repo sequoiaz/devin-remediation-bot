@@ -2,6 +2,7 @@ import logging
 from unittest.mock import MagicMock
 
 from app.devin_client import DevinAPIError
+from app.github_client import GitHubAPIError
 from app.poller import extract_pr, poll_once, resolve_pr
 
 REPO = "fake-org/fake-repo"
@@ -228,3 +229,73 @@ def test_forced_poll_does_not_stick_an_error_on_a_done_row(database):
             "error": "session no longer exists",
         }
     ]
+
+
+PR = "https://github.com/fake-org/fake-repo/pull/9"
+
+
+def test_pr_state_is_refreshed_after_the_pull_request_is_merged(database):
+    """A done row is never polled again, so its PR state has to come from GitHub."""
+    database.upsert_session(
+        issue_number=42, devin_session_id="s1", status="exit", pr_url=PR,
+        pr_state="open",
+    )
+    github = MagicMock()
+    github.get_pr_state.return_value = "merged"
+    poll_once(database, MagicMock(), github, REPO)
+    github.get_pr_state.assert_called_once_with(PR)
+    assert database.get_session(42, "s1")["pr_state"] == "merged"
+
+
+def test_a_settled_pr_is_not_queried_again(database):
+    database.upsert_session(
+        issue_number=42, devin_session_id="s1", status="exit", pr_url=PR,
+        pr_state="merged",
+    )
+    github = MagicMock()
+    poll_once(database, MagicMock(), github, REPO)
+    github.get_pr_state.assert_not_called()
+
+
+def test_an_unreadable_pr_state_is_reported_and_leaves_the_row_alone(database):
+    database.upsert_session(
+        issue_number=42, devin_session_id="s1", status="exit", pr_url=PR,
+        pr_state="open",
+    )
+    github = MagicMock()
+    github.get_pr_state.side_effect = GitHubAPIError("HTTP 404")
+    report = poll_once(database, MagicMock(), github, REPO)
+    assert report.errors == [
+        {"issue_number": 42, "devin_session_id": "s1", "error": "HTTP 404"}
+    ]
+    assert database.get_session(42, "s1")["pr_state"] == "open"
+
+
+def test_refreshing_the_pr_state_keeps_the_row_done(database):
+    """`upsert_session` clears status_detail, which would un-finish the row."""
+    database.upsert_session(
+        issue_number=42, devin_session_id="s1", status="running",
+        status_detail="finished", pr_url=PR, pr_state="open",
+    )
+    devin = MagicMock()
+    devin.get_session.return_value = finished_session()
+    github = MagicMock()
+    github.get_pr_state.return_value = "merged"
+    poll_once(database, devin, github, REPO)
+
+    row = database.get_session(42, "s1")
+    assert (row["status_detail"], row["pr_state"]) == ("finished", "merged")
+    # Still done, so the next cycle leaves it alone instead of re-polling forever.
+    assert database.list_non_terminal_sessions() == []
+
+
+def test_a_session_cannot_reopen_a_merged_pull_request(database):
+    """Devin keeps reporting `open`; GitHub is the authority once the PR settles."""
+    database.upsert_session(
+        issue_number=42, devin_session_id="s1", status="running", pr_url=PR,
+        pr_state="merged",
+    )
+    devin = MagicMock()
+    devin.get_session.return_value = finished_session()
+    poll_once(database, devin, MagicMock(), REPO)
+    assert database.get_session(42, "s1")["pr_state"] == "merged"
