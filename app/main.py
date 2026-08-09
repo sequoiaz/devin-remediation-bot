@@ -231,6 +231,9 @@ async def simulate(request: Request) -> Response:
 def _parse_ts(value: Optional[str]) -> Optional[datetime]:
     if not value:
         return None
+    # GitHub timestamps end in `Z`, which fromisoformat only accepts on 3.11+.
+    if value.endswith(("Z", "z")):
+        value = f"{value[:-1]}+00:00"
     try:
         return datetime.fromisoformat(value)
     except ValueError:

@@ -271,5 +271,6 @@ def test_time_to_pr_measures_when_the_pr_was_opened(env):
     )
     row = db.get_session(1, "s1")
     opened = _parse_ts(row["created_at"]) + timedelta(minutes=12)
-    db.record_pr(1, "s1", "open", opened.isoformat())
+    # GitHub spells UTC `Z`, which fromisoformat rejects before Python 3.11.
+    db.record_pr(1, "s1", "open", opened.isoformat().replace("+00:00", "Z"))
     assert time_to_pr_seconds(db.get_session(1, "s1")) == 12 * 60
