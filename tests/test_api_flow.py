@@ -204,10 +204,32 @@ def test_refresh_polls_in_flight_sessions_on_demand(client, env):
     ):
         response = client.post("/refresh")
 
-    assert response.json() == {"status": "ok", "sessions_refreshed": 1}
+    assert response.json() == {"status": "ok", "sessions_refreshed": 1, "forced": False}
     row = db.get_session(1, "s1")
     assert row["pr_url"] == f"https://github.com/{TARGET_REPO}/pull/9"
     assert row["status"] == "exit"
+
+
+def test_forced_refresh_recovers_a_done_row_with_no_pr(client, env):
+    """An older bot version could complete a row without ever recording its PR."""
+    db = get_db(env)
+    db.upsert_session(issue_number=1, devin_session_id="s1", status="exit")
+    devin = MagicMock()
+    devin.get_session.return_value = {
+        "session_id": "s1",
+        "url": "https://app.devin.ai/sessions/s1",
+        "status": "exit",
+        "status_detail": None,
+        "pull_requests": [{"pr_url": f"https://github.com/{TARGET_REPO}/pull/9", "pr_state": "open"}],
+        "acus_consumed": 2.0,
+    }
+    with patch("app.main.get_devin_client", return_value=devin), patch(
+        "app.main.get_github_client", return_value=MagicMock()
+    ):
+        assert client.post("/refresh").json()["sessions_refreshed"] == 0
+        assert client.post("/refresh?force=true").json()["sessions_refreshed"] == 1
+
+    assert db.get_session(1, "s1")["pr_url"] == f"https://github.com/{TARGET_REPO}/pull/9"
 
 
 def test_poll_failures_are_visible(client, env):

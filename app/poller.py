@@ -39,12 +39,21 @@ def poll_once(
     devin_client: DevinClient,
     github_client: GitHubClient,
     target_repo: str,
+    force: bool = False,
 ) -> int:
-    """Refresh every non-terminal session. Returns the number of rows updated."""
+    """Refresh every non-terminal session. Returns the number of rows updated.
+
+    `force` also refreshes rows that already count as done, which recovers a row
+    an earlier version of the bot left terminal without ever recording its PR.
+    """
+    rows = db.list_sessions() if force else db.list_non_terminal_sessions()
     updated = 0
-    for row in db.list_non_terminal_sessions():
+    for row in rows:
         session_id = row["devin_session_id"]
         issue_number = row["issue_number"]
+        was_done = is_done(
+            row.get("status"), row.get("status_detail"), row.get("pr_url")
+        )
         try:
             session = devin_client.get_session(session_id)
         except DevinAPIError as exc:
@@ -54,7 +63,9 @@ def poll_once(
                 issue_number,
                 exc,
             )
-            db.record_poll(issue_number, session_id, error=str(exc))
+            # Nothing polls a done row again, so a stored error would never clear.
+            if not was_done:
+                db.record_poll(issue_number, session_id, error=str(exc))
             continue
 
         old_status = row.get("status")
